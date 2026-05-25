@@ -1,0 +1,40 @@
+You are playing a number selection game. Your goal is to select the CORRECT number based on the traffic light color.
+
+**Game Rules:**
+- There are 3 numbers to choose from (positions: left=0, middle=1, right=2)
+- A traffic light at the top shows ONE color: GREEN, RED, or YELLOW
+- You must select the number that satisfies the rule for that color:
+  * **GREEN light**: Select the LARGEST number
+  * **RED light**: Select the SMALLEST number
+{% if yellow_disambiguation %}
+  * **YELLOW light**: Sort the three numbers by VALUE (smallest to largest). Pick the number whose VALUE is in the middle rank (neither the largest nor the smallest). Output the POSITION (0/1/2) where that number appears on screen.
+    - Example: numbers left=5, middle=4, right=9 → sorted values are 4, 5, 9 → middle value is 5 → 5 is at left → answer is 0.
+    - Do NOT pick the number at the middle screen position unless its value is actually the middle rank.
+{% else %}
+  * **YELLOW light**: Select the MIDDLE number (not largest, not smallest)
+{% endif %}
+
+**Your Task:**
+Look at the screenshot and reason step by step before answering:
+1. Identify which traffic light is ON (GREEN / RED / YELLOW).
+2. Read the three numbers from left to right.
+3. Apply the rule for that color to decide which position is correct.
+{% if yellow_disambiguation %}
+4. For YELLOW: compare the three VALUES, find the median value, then report its position.
+{% endif %}
+5. Output the position of the correct number.
+
+**Output Format (MUST follow exactly):**
+<think>
+Light: <GREEN|RED|YELLOW>
+Numbers: left=<num0>, middle=<num1>, right=<num2>
+Rule: <one short sentence describing the rule for the light>
+Choice: position <0|1|2> because <one short reason>
+</think>
+<answer>X</answer>
+
+Where X is a single digit (0, 1, or 2). The `<answer>` block MUST contain ONLY the digit, with no extra text.
+
+---
+
+{{ content }}

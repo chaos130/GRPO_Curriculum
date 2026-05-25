@@ -1,0 +1,127 @@
+{
+  "website": "seatgeek",
+  "domain": "Entertainment",
+  "subdomain": "Event",
+  "annotation_id": "8f6261cf-d665-4e61-93af-f50f0d366245",
+  "confirmed_task": "Find all events taking place in New York City during the month of September.",
+  "action_reprs": [
+    "[button]  Change Location -> CLICK",
+    "[searchbox]  Search by city... -> TYPE: New York",
+    "[option]  New York, NY -> CLICK",
+    "... (11 items total, showing first 3)"
+  ],
+  "actions": [
+    {
+      "action_uid": "f3ae6144-2f6c-407a-b5c2-bcb9d069ad84",
+      "raw_html": "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.0 Transi  ...(521697 chars total)...  div>\n      </div>\n    </footer>\n  </body>\n</html>\n",
+      "cleaned_html": "<html backend_node_id=\"140\">\n  <body backend_node_  ...(224668 chars total)...  /div>\n      </div>\n    </footer>\n  </body>\n</html>",
+      "operation": {
+        "original_op": "CLICK",
+        "value": "",
+        "op": "CLICK"
+      },
+      "pos_candidates": [
+        {
+          "tag": "button",
+          "attributes": "{\"backend_node_id\": \"2058\", \"bounding_box_rect\": \"60,1701,146.203125,34\", \"class\": \"Pills__PillContainer-sc-b74366a9-31 kSozeC\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "is_original_target": false,
+          "is_top_level_target": true,
+          "backend_node_id": "2058"
+        }
+      ],
+      "neg_candidates": [
+        {
+          "tag": "html",
+          "attributes": "{\"backend_node_id\": \"140\", \"bounding_box_rect\": \"0,0,1280,13361\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "backend_node_id": "140"
+        },
+        {
+          "tag": "body",
+          "attributes": "{\"backend_node_id\": \"279\", \"bounding_box_rect\": \"0,0,1280,13361\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "backend_node_id": "279"
+        },
+        {
+          "tag": "div",
+          "attributes": "{\"backend_node_id\": \"281\", \"bounding_box_rect\": \"0,0,1280,1437\", \"id\": \"__next\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "backend_node_id": "281"
+        },
+        "... (728 items total, showing first 3)"
+      ]
+    },
+    {
+      "action_uid": "49424647-84d9-41d8-a67c-49b95cc7d539",
+      "raw_html": "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.0 Transi  ...(556092 chars total)...  div>\n      </div>\n    </footer>\n  </body>\n</html>\n",
+      "cleaned_html": "<html backend_node_id=\"19167\">\n  <body backend_nod  ...(228102 chars total)...  /div>\n      </div>\n    </footer>\n  </body>\n</html>",
+      "operation": {
+        "original_op": "TYPE",
+        "value": "New York",
+        "op": "TYPE"
+      },
+      "pos_candidates": [
+        {
+          "tag": "input",
+          "attributes": "{\"backend_node_id\": \"19162\", \"bounding_box_rect\":   ...(305 chars total)...  : \"true\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "is_original_target": true,
+          "is_top_level_target": true,
+          "backend_node_id": "19162"
+        }
+      ],
+      "neg_candidates": [
+        {
+          "tag": "html",
+          "attributes": "{\"backend_node_id\": \"19167\", \"bounding_box_rect\": \"0,0,1280,5385.15625\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "backend_node_id": "19167"
+        },
+        {
+          "tag": "body",
+          "attributes": "{\"backend_node_id\": \"19306\", \"bounding_box_rect\": \"0,0,1280,5385.15625\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "backend_node_id": "19306"
+        },
+        {
+          "tag": "div",
+          "attributes": "{\"backend_node_id\": \"19308\", \"bounding_box_rect\": \"0,0,1280,1773.109375\", \"id\": \"__next\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "backend_node_id": "19308"
+        },
+        "... (731 items total, showing first 3)"
+      ]
+    },
+    {
+      "action_uid": "df1c76d2-99c4-4c63-ad47-ffc5ba271a6e",
+      "raw_html": "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.0 Transi  ...(560121 chars total)...  div>\n      </div>\n    </footer>\n  </body>\n</html>\n",
+      "cleaned_html": "<html backend_node_id=\"28688\">\n  <body backend_nod  ...(230156 chars total)...  /div>\n      </div>\n    </footer>\n  </body>\n</html>",
+      "operation": {
+        "original_op": "CLICK",
+        "value": "",
+        "op": "CLICK"
+      },
+      "pos_candidates": [
+        {
+          "tag": "li",
+          "attributes": "{\"backend_node_id\": \"30605\", \"bounding_box_rect\": \"60,2294.109375,280,44\", \"role\": \"option\", \"id\": \"downshift-2-item-0\", \"class\": \"ResultItem__Wrapper-sc-34b2be57-0 bTVgKa\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "is_original_target": false,
+          "is_top_level_target": true,
+          "backend_node_id": "30605"
+        }
+      ],
+      "neg_candidates": [
+        {
+          "tag": "html",
+          "attributes": "{\"backend_node_id\": \"28688\", \"bounding_box_rect\": \"0,0,1280,5385.15625\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "backend_node_id": "28688"
+        },
+        {
+          "tag": "body",
+          "attributes": "{\"backend_node_id\": \"28827\", \"bounding_box_rect\": \"0,0,1280,5385.15625\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "backend_node_id": "28827"
+        },
+        {
+          "tag": "div",
+          "attributes": "{\"backend_node_id\": \"28829\", \"bounding_box_rect\": \"0,0,1280,1773.109375\", \"id\": \"__next\", \"data_pw_testid_buckeye_candidate\": \"1\"}",
+          "backend_node_id": "28829"
+        },
+        "... (740 items total, showing first 3)"
+      ]
+    },
+    "... (11 items total, showing first 3)"
+  ]
+}

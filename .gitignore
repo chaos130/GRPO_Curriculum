@@ -1,0 +1,31 @@
+# 本地子仓库 git 备份（勿提交）
+**/.git.repo.bak/
+
+# OS / IDE
+.DS_Store
+.idea/
+*.ipynb_checkpoints
+
+# EasyR1 — 大文件与训练产物
+EasyR1/checkpoints/
+EasyR1/wandb/
+EasyR1/tensorboard_log/
+EasyR1/outputs/
+EasyR1/**/__pycache__/
+EasyR1/**/*.egg-info/
+EasyR1/.pytest_cache/
+EasyR1/debug-*.log
+
+# Mind2Web — 数据与本地产物
+Mind2Web/data/
+Mind2Web/outputs/
+Mind2Web/**/*.pkl
+Mind2Web/src_old/
+Mind2Web/_push*.sh
+Mind2Web/_push*.txt
+Mind2Web/data_inspector.ipynb
+
+# 通用
+*.pt
+*.pyc
+__pycache__/

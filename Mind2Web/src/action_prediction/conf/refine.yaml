@@ -1,0 +1,68 @@
+defaults:
+  - _self_
+
+# ---------------- LLMs ---------------- #
+policy_llm: qwen3-32b
+judge_llm: qwen2.5-72b-instruct
+policy_rate_limit: 20
+judge_rate_limit: 20
+llm_thread_workers: 1         # 单个 engine 的线程池大小
+# Optional override. If null, use provider defaults:
+#   openai  -> https://xiaoai.plus/v1
+#   chatglm -> https://open.bigmodel.cn/api/paas/v4
+#   qwen    -> https://dashscope.aliyuncs.com/compatible-mode/v1
+#   custom  -> https://yunwu.ai/v1
+policy_api_base: https://yunwu.ai/v1 
+judge_api_base: https://yunwu.ai/v1
+# Optional override for API key env var. If null, use defaults:
+#   openai  -> OPENAI_API_KEY
+#   chatglm -> ZHIPUAI_API_KEY
+#   qwen    -> DASHSCOPE_API_KEY
+#   custom  -> YUNWU_API_KEY
+policy_api_key_env: YUNWU_API_KEY
+judge_api_key_env: YUNWU_API_KEY
+# 可选：直接传多 key（字符串逗号分隔或 YAML 列表），用于轮询
+# 示例:
+# policy_api_keys: "k1,k2,k3,k4"
+# judge_api_keys: ["k1","k2","k3","k4"]
+policy_api_keys: null
+judge_api_keys: null
+
+# ---------------- output / run ---------------- #
+output_path: ./output_refine
+run_id: refine_full
+seed: 123
+# debug cap on samples per split (-1 to disable)
+limit: 27
+
+# ---------------- data ---------------- #
+data:
+  data_path: /mnt/sda/Xml/workplace/data/Mind2Web
+  test_split_files:
+    test_task: data/test_task/*.json
+    # test_website: data/test_website/*.json
+    # test_domain:  data/test_domain/*.json
+  score_file: /mnt/sda/Xml/workplace/data/Mind2Web/src/scores_all_data.pkl
+
+# ---------------- refinement loop ---------------- #
+refine:
+  max_rounds: 5
+  score_threshold: 5.0       # total score threshold, range 0~7
+  top_k: 50                   # keep candidates with rank < top_k
+  max_candidates: 20          # hard cap on candidates fed to the policy
+  previous_k: 5               # how many previous ground-truth actions to surface
+  keep_html_brackets: true
+  policy_max_new_tokens: 128
+  judge_max_new_tokens: 256
+  policy_temperature: 0.0
+  policy_temperature_boost: 0.1  # added per round after round 1 for exploration
+  judge_temperature: 0.0
+  num_workers: 1        # task样本级并发线程数（>1 启用并发）
+
+# ---------------- hydra ---------------- #
+hydra:
+  run:
+    dir: ./output_refine/logs_refine
+  job:
+    chdir: false
+  verbose: INFO

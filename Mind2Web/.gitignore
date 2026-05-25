@@ -1,0 +1,20 @@
+.DS_store
+.DS_Store
+.idea
+*.ipynb
+*.pyc
+test_config.yaml
+test.sh
+
+# Local datasets & large artifacts (keep on disk, do not push)
+data/
+*.pkl
+outputs/
+src/action_prediction/output/
+src/action_prediction/refine/output_refine/
+src/scores_all_data.pkl
+
+# Local backups / temp
+src_old/
+_push*.sh
+_push*.txt
