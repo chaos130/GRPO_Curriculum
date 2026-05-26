@@ -1,0 +1,95 @@
+data:
+  dataset_type: mind2web_trajectory
+  rollout_type: mind2web_trajectory
+  train_files: data/train/*.json
+  val_files: data/test_task/*.json
+  max_prompt_length: 4096
+  max_response_length: 256
+  rollout_batch_size: 1
+  mini_rollout_batch_size: null
+  val_batch_size: 1
+  shuffle: true
+  seed: 1
+  filter_overlong_prompts: false
+  dataset_kwargs:
+    data_path: /Users/chaos/workplace/data/Mind2Web
+    candidate_source: ranked
+    score_file: /Users/chaos/workplace/data/Mind2Web/src/scores_all_data.pkl
+    top_k: 50
+    max_candidates: 20
+    previous_k: 5
+    keep_html_brackets: false
+    task_filter: none
+
+algorithm:
+  adv_estimator: grpo
+  disable_kl: false
+  use_kl_loss: true
+  kl_penalty: low_var_kl
+  kl_coef: 1.0e-2
+  online_filtering: false
+
+worker:
+  actor:
+    global_batch_size: 1
+    micro_batch_size_per_device_for_update: 1
+    micro_batch_size_per_device_for_experience: 1
+    max_grad_norm: 1.0
+    model:
+      model_path: Qwen/Qwen2.5-7B-Instruct
+      trust_remote_code: false
+      lora:
+        rank: 0
+    optim:
+      lr: 1.0e-6
+      weight_decay: 1.0e-2
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: false
+      enable_rank0_init: true
+    offload:
+      offload_params: true
+      offload_optimizer: true
+
+  rollout:
+    n: 2
+    temperature: 0.8
+    top_p: 0.95
+    limit_images: 0
+    gpu_memory_utilization: 0.6
+    tensor_parallel_size: 1
+    val_override_config:
+      temperature: 0.6
+      top_p: 0.95
+      n: 1
+
+  ref:
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: true
+      enable_rank0_init: true
+    offload:
+      offload_params: false
+
+  reward:
+    reward_function: ../rewards/mind2web_trajectory.py:compute_score
+
+trainer:
+  total_epochs: 1
+  max_steps: null
+  project_name: grpo_curriculum
+  experiment_name: mind2web_trajectory_grpo
+  logger: ["console"]
+  nnodes: 1
+  n_gpus_per_node: 1
+  max_try_make_batch: 5
+  val_freq: -1
+  val_before_train: false
+  val_after_train: false
+  val_generations_to_log: 0
+  save_freq: -1
+  save_limit: 1
+  save_model_only: false
+  save_checkpoint_path: null
+  load_checkpoint_path: null
+  find_last_checkpoint: true

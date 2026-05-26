@@ -35,6 +35,12 @@ def recursive_post_init(dataclass_obj):
 
 @dataclass
 class DataConfig:
+    dataset_type: str = "rlhf"
+    """Dataset adapter to use. `rlhf` keeps EasyR1 behavior; `mind2web_trajectory` loads native Mind2Web tasks."""
+    rollout_type: str = "default"
+    """Rollout adapter to use. `default` is one prompt -> one response; `mind2web_trajectory` rolls out fixed states."""
+    dataset_kwargs: Dict[str, Any] = field(default_factory=dict)
+    """Extra keyword arguments consumed by non-default dataset adapters."""
     train_files: str = ""
     val_files: str = ""
     prompt_key: str = "prompt"

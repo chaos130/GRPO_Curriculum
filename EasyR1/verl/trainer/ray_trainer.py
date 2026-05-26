@@ -18,11 +18,13 @@ This trainer supports model-agonistic model initialization with huggingface.
 
 import json
 import os
+import sys
 import uuid
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import IntEnum, auto
+from pathlib import Path
 from typing import Any, Optional, Type
 
 import numpy as np
@@ -60,6 +62,14 @@ from .metrics import (
     compute_timing_metrics,
     reduce_metrics,
 )
+
+_GRPO_CURRICULUM_ROOT = Path(__file__).resolve().parents[3]
+if _GRPO_CURRICULUM_ROOT.as_posix() not in sys.path:
+    # Rollout adapters live in the parent GRPO_Curriculum framework layer,
+    # while EasyR1 is executed from its own package root.
+    sys.path.insert(0, _GRPO_CURRICULUM_ROOT.as_posix())
+
+from rollout.mind2web_trajectory_rollout import generate_mind2web_trajectory_batch
 
 
 class Role(IntEnum):
@@ -236,6 +246,9 @@ class RayPPOTrainer:
         ):
             raise ValueError("GRPO and RLOO algorithm need `config.worker.rollout.n > 1`.")
 
+        if config.data.rollout_type == "mind2web_trajectory" and config.algorithm.online_filtering:
+            raise ValueError("Mind2Web trajectory rollout does not support online_filtering yet.")
+
         if config.trainer.max_steps is not None:
             self.training_steps = config.trainer.max_steps
         elif config.data.mini_rollout_batch_size is not None:
@@ -247,6 +260,11 @@ class RayPPOTrainer:
         config.worker.actor.optim.training_steps = self.training_steps
         config.worker.critic.optim.training_steps = self.training_steps
         print(f"Total training steps: {self.training_steps}")
+
+    def _is_mind2web_trajectory_rollout(self) -> bool:
+        """Return whether this run uses the Mind2Web fixed-state rollout adapter."""
+
+        return self.config.data.rollout_type == "mind2web_trajectory"
 
     def init_workers(self) -> None:
         """Init resource pool and worker group"""
@@ -428,23 +446,49 @@ class RayPPOTrainer:
         self.actor_rollout_ref_wg.prepare_rollout_engine()
         for batch_dict in self.val_dataloader:
             test_batch = DataProto.from_single_dict(batch_dict)
-            test_gen_batch = test_batch.pop(
-                batch_keys=["input_ids", "attention_mask", "position_ids"],
-                non_tensor_batch_keys=["raw_prompt_ids", "multi_modal_data"],
-            )
-            repeat_times = self.config.worker.rollout.val_override_config.get("n", 1)
-            test_gen_batch.meta_info = self.config.worker.rollout.val_override_config
-            test_gen_batch.meta_info["min_pixels"] = self.config.data.min_pixels
-            test_gen_batch.meta_info["max_pixels"] = self.config.data.max_pixels
-            test_gen_batch.meta_info["video_fps"] = self.config.data.video_fps
+            if self._is_mind2web_trajectory_rollout():
+                # Validation also samples complete fixed-state trajectories, but
+                # uses the validation override for rollout count/temperature.
+                test_batch.non_tensor_batch["uid"] = np.array(
+                    [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
+                )
+                repeat_times = self.config.worker.rollout.val_override_config.get("n", 1)
+                generation_meta = {
+                    **self.config.worker.rollout.val_override_config,
+                    "min_pixels": self.config.data.min_pixels,
+                    "max_pixels": self.config.data.max_pixels,
+                    "video_fps": self.config.data.video_fps,
+                }
+                test_batch = generate_mind2web_trajectory_batch(
+                    actor_rollout_ref_wg=self.actor_rollout_ref_wg,
+                    task_batch=test_batch,
+                    tokenizer=self.tokenizer,
+                    rollout_n=repeat_times,
+                    max_prompt_length=self.config.data.max_prompt_length,
+                    truncation="right",
+                    generation_meta=generation_meta,
+                    skip_special_tokens=self.config.worker.reward.skip_special_tokens,
+                )
+            else:
+                test_gen_batch = test_batch.pop(
+                    batch_keys=["input_ids", "attention_mask", "position_ids"],
+                    non_tensor_batch_keys=["raw_prompt_ids", "multi_modal_data"],
+                )
+                repeat_times = self.config.worker.rollout.val_override_config.get("n", 1)
+                test_gen_batch.meta_info = self.config.worker.rollout.val_override_config
+                test_gen_batch.meta_info["min_pixels"] = self.config.data.min_pixels
+                test_gen_batch.meta_info["max_pixels"] = self.config.data.max_pixels
+                test_gen_batch.meta_info["video_fps"] = self.config.data.video_fps
 
-            test_gen_batch, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_ref_wg.world_size)
-            test_output_gen_batch = self.actor_rollout_ref_wg.generate_sequences(test_gen_batch)
-            test_output_gen_batch = unpad_dataproto(test_output_gen_batch, pad_size=pad_size * repeat_times)
+                test_gen_batch, pad_size = pad_dataproto_to_divisor(
+                    test_gen_batch, self.actor_rollout_ref_wg.world_size
+                )
+                test_output_gen_batch = self.actor_rollout_ref_wg.generate_sequences(test_gen_batch)
+                test_output_gen_batch = unpad_dataproto(test_output_gen_batch, pad_size=pad_size * repeat_times)
 
-            # repeat to align with repeated responses in rollout
-            test_batch = test_batch.repeat(repeat_times=repeat_times, interleave=True)
-            test_batch = test_batch.union(test_output_gen_batch)
+                # repeat to align with repeated responses in rollout
+                test_batch = test_batch.repeat(repeat_times=repeat_times, interleave=True)
+                test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
             # compute_reward 返回 3-tuple: (tensor, metrics, extras)；validation 不用 extras
@@ -515,6 +559,35 @@ class RayPPOTrainer:
             new_batch.non_tensor_batch["uid"] = np.array(
                 [str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object
             )
+
+            if self._is_mind2web_trajectory_rollout():
+                # A Mind2Web batch item is a full task.  The rollout adapter
+                # expands it into step-action rows for all sampled trajectories.
+                new_batch = generate_mind2web_trajectory_batch(
+                    actor_rollout_ref_wg=self.actor_rollout_ref_wg,
+                    task_batch=new_batch,
+                    tokenizer=self.tokenizer,
+                    rollout_n=self.config.worker.rollout.n,
+                    max_prompt_length=self.config.data.max_prompt_length,
+                    truncation="right",
+                    generation_meta=meta_info,
+                    skip_special_tokens=self.config.worker.reward.skip_special_tokens,
+                )
+                batch = DataProto.concat([batch, new_batch]) if batch is not None else new_batch
+                current_batch_size = len({str(uid) for uid in batch.non_tensor_batch["uid"]})
+                rollout_batch_size = self.config.data.rollout_batch_size
+                if current_batch_size >= rollout_batch_size:
+                    print(f"{current_batch_size=} >= {rollout_batch_size=}. Finish generating.")
+                    return batch
+
+                print(f"{current_batch_size=} < {rollout_batch_size=}")
+                max_try_make_batch = self.config.trainer.max_try_make_batch
+                if max_try_make_batch <= 0 or num_try_make_batch < max_try_make_batch:
+                    print(f"{num_try_make_batch=}. Continue generating...")
+                    continue
+                raise RuntimeError(
+                    f"{num_try_make_batch=} >= {max_try_make_batch=}. Generated too many. Please check your data."
+                )
 
             # pop those keys for generation
             gen_batch = new_batch.pop(
