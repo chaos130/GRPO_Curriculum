@@ -3,7 +3,7 @@
 # 目的：验证新的 <think>/<answer> prompt，并把 rollout 轨迹 dump 成 JSON 查看。
 # 不做长训、不写 wandb、不存 checkpoint。
 export JUDGE_ENABLED=true
-export JUDGE_API_KEY=sk-KxRYR2ovtMGU7b6jDGpYDID0evUTyUkPL6nwJKHxh5PYQ8Zk
+export JUDGE_API_KEY=
 export JUDGE_BASE_URL=https://yunwu.ai/v1   # 或 DashScope: https://dashscope.aliyuncs.com/compatible-mode/v1
 export JUDGE_MODEL=gpt-4o-mini
 set -e
