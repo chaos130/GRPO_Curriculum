@@ -1,12 +1,161 @@
-# GUI_GRPO
+# GRPO_Curriculum
 
-本仓库以 **EasyR1** 为主：在 [EasyR1/veRL](https://github.com/hiyouga/EasyR1) 上用 **GRPO** 微调视觉语言模型，面向 **Android 截图数字游戏** 任务做了端到端重设计（prompt、稠密奖励、Judge、调试工具链）。
+本仓库当前定位为 **GRPO Curriculum 框架层**：以 **EasyR1/verl** 作为 GRPO 训练后端，以 **Mind2Web** 作为离线 Web agent benchmark/dataset 后端，并保留已有 Android GUI GRPO 实验代码。
 
 ```
-GUI_GRPO/
-├── EasyR1/          # GRPO 训练 + Android GUI 定制
-└── Mind2Web/        # Mind2Web 数据集与基线代码（见官方文档）
+GRPO_Curriculum/
+├── data/            # 框架层 dataset adapters
+├── prompts/         # 框架层 prompt/state builders
+├── rollout/         # 框架层 rollout adapters
+├── rewards/         # 框架层 reward helpers / smoke rewards
+├── configs/         # 框架层实验配置
+├── EasyR1/          # GRPO/verl 训练后端 + Android GUI 定制
+└── Mind2Web/        # Mind2Web 原始数据集与基线代码（见官方文档）
 ```
+
+---
+
+## Mind2Web Trajectory GRPO 框架
+
+新增代码实现了 **Mind2Web offline trajectory-level GRPO** 的第一版框架。它不是把 Mind2Web 离线转换成 EasyR1 现有 step 数据格式，而是保留 Mind2Web 原始 task/trajectory 结构：
+
+```text
+task = (S1, A1*, S2, A2*, ..., St, At*)
+```
+
+其中每一步状态 `S_i` 定义为输入给 policy LLM 的提示词：
+
+```text
+S_i = tree_repr_i + seq_input_i
+```
+
+- `tree_repr_i`：由 `cleaned_html_i` 按 `candidate_ids_i` 裁剪 DOM 后得到。
+- `seq_input_i`：由 `confirmed_task` 和 `previous_actions` 构造，沿用 Mind2Web 原生 SFT prompt 文字。
+- 状态序列 `S1...St` 来自 Mind2Web 离线数据，是固定的；rollout 时采样的是动作序列。
+
+### 1. 新增框架层模块
+
+| 文件 | 作用 |
+|------|------|
+| `prompts/mind2web.py` | 复刻并拆分 Mind2Web 的状态构造逻辑：`tree_repr`、`seq_input`、`state_prompt`、`seq_target` |
+| `data/adapters/mind2web_trajectory.py` | task-level Dataset adapter；一个样本是一条 Mind2Web task trajectory，而不是单个 step |
+| `rollout/mind2web_trajectory_rollout.py` | offline trajectory rollout；对同一 task 固定状态序列采样 `rollout.n` 条动作轨迹 |
+| `rewards/mind2web_trajectory.py` | smoke-test reward，仅检查 step action 是否可解析；正式 trajectory reward 后续实现 |
+| `configs/mind2web_trajectory_grpo.yaml` | Mind2Web trajectory GRPO 的最小示例配置 |
+
+### 2. EasyR1 后端接入点
+
+| 文件 | 改动 |
+|------|------|
+| `EasyR1/verl/trainer/config.py` | 新增 `data.dataset_type`、`data.rollout_type`、`data.dataset_kwargs` |
+| `EasyR1/verl/trainer/data_loader.py` | 新增 dataset factory；默认仍走 `RLHFDataset`，`mind2web_trajectory` 时走新 adapter |
+| `EasyR1/verl/trainer/ray_trainer.py` | 新增 `rollout_type == mind2web_trajectory` 分支；默认 rollout 路径保持不变 |
+
+默认配置仍是：
+
+```yaml
+data:
+  dataset_type: rlhf
+  rollout_type: default
+```
+
+因此已有 EasyR1 / Android GUI 训练脚本不受影响。
+
+### 3. Mind2Web Dataset 输出契约
+
+`Mind2WebTrajectoryDataset` 保持 EasyR1 batch contract，返回：
+
+```text
+input_ids
+attention_mask
+position_ids
+raw_prompt_ids
+ground_truth
+trajectory_data
+```
+
+其中 `input_ids/raw_prompt_ids` 是 task-level seed prompt，用于兼容 EasyR1 数据接口；真正用于 policy rollout 的每一步状态在：
+
+```text
+trajectory_data["steps"][i]["state_prompt"]
+```
+
+每个 step 保留：
+
+```text
+step_index
+action_uid
+candidate_ids
+tree_repr
+seq_input
+state_prompt
+choices
+pos_candidates / neg_candidates
+pos_ids
+operation
+target_action
+seq_target
+valid_positive
+```
+
+### 4. Rollout 过程
+
+Mind2Web trajectory rollout 的单位是一个 task，而不是 step：
+
+```text
+同一个 task
+  固定状态序列 S1...St
+  采样 rollout.n 条动作轨迹
+```
+
+实现上 `rollout/mind2web_trajectory_rollout.py` 会：
+
+1. 对 batch 中每个 task 创建 `rollout.n` 个 trajectory context。
+2. 对第 `i` 个固定状态 `S_i` 调用 EasyR1 现有 `actor_rollout_ref_wg.generate_sequences`。
+3. 收集每条轨迹的 step responses。
+4. 将结果展开为 EasyR1 可继续训练的 step-action rows，并附带：
+   - `uid`
+   - `trajectory_id`
+   - `rollout_index`
+   - `step_index`
+   - `step_data`
+   - `trajectory_data`
+   - `predicted_trajectory`
+
+后续 reward 可以基于 `trajectory_id` 聚合整条轨迹得分，再回填到同一条轨迹的 step action 上。
+
+### 5. 示例配置
+
+配置文件：
+
+```text
+configs/mind2web_trajectory_grpo.yaml
+```
+
+关键字段：
+
+```yaml
+data:
+  dataset_type: mind2web_trajectory
+  rollout_type: mind2web_trajectory
+  train_files: data/train/*.json
+  val_files: data/test_task/*.json
+  dataset_kwargs:
+    data_path: /Users/chaos/workplace/data/Mind2Web
+    candidate_source: ranked
+    score_file: /Users/chaos/workplace/data/Mind2Web/src/scores_all_data.pkl
+    top_k: 50
+    max_candidates: 20
+    previous_k: 5
+    keep_html_brackets: false
+    task_filter: none
+
+worker:
+  rollout:
+    n: 2
+```
+
+当前 `rewards/mind2web_trajectory.py` 只是 smoke-test reward，不代表最终训练目标。下一步应实现真正的 trajectory-level reward。
 
 ---
 
