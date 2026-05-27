@@ -15,6 +15,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from data.qwen_vl_compat import expand_text_position_ids_for_qwen_vl
+from prompts.mind2web import POLICY_SYSTEM, build_seq_input, build_step_prompt
 from verl.protocol import DataProto, pad_dataproto_to_divisor, unpad_dataproto
 from verl.utils import torch_functional as VF
 
@@ -40,6 +42,35 @@ class _TrajectoryContext:
     generated_actions: list[str] = field(default_factory=list)
 
 
+def _state_prompt_for_step(
+    context: "_TrajectoryContext",
+    step_index: int,
+    step: dict[str, Any],
+) -> str:
+    """Build the policy prompt for `step_index` under the configured source.
+
+    - "gold" (default): reuse the dataset's prebuilt `state_prompt`; identical
+      across all rollouts of the same task, matching Mind2Web SFT semantics.
+    - "policy": keep the fixed DOM (`tree_repr`) but rebuild `seq_input` from
+      this rollout's own previously sampled actions. Trajectories of the same
+      task then diverge as soon as their `generated_actions` differ.
+    """
+
+    source = context.trajectory_data.get("previous_action_source", "gold")
+    if source == "gold" or step_index == 0:
+        return step["state_prompt"]
+
+    previous_k = int(context.trajectory_data.get("previous_k", 5))
+    return build_step_prompt(
+        tree_repr=step["tree_repr"],
+        seq_input=build_seq_input(
+            confirmed_task=context.trajectory_data["confirmed_task"],
+            previous_actions=context.generated_actions[:step_index],
+            previous_k=previous_k,
+        ),
+    )
+
+
 def _encode_prompt_batch(
     prompts: list[str],
     tokenizer,
@@ -52,7 +83,10 @@ def _encode_prompt_batch(
     input_ids_list, attention_mask_list, position_ids_list, raw_prompt_ids = [], [], [], []
     for prompt in prompts:
         chat_prompt = tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
+            [
+                {"role": "system", "content": POLICY_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
             add_generation_prompt=True,
             tokenize=False,
         )
@@ -60,6 +94,13 @@ def _encode_prompt_batch(
         input_ids = model_inputs["input_ids"][0]
         attention_mask = model_inputs["attention_mask"][0]
         position_ids = torch.clip(attention_mask.cumsum(dim=0) - 1, min=0)
+
+        # Reuse `input_ids` instead of re-encoding the same `chat_prompt`.
+        prompt_ids = input_ids.tolist()
+
+        # Qwen-VL forward needs (4, seq_len) mrope position_ids even for text-only inputs.
+        position_ids = expand_text_position_ids_for_qwen_vl(position_ids, tokenizer)
+
         input_ids, attention_mask, position_ids = VF.postprocess_data(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -69,7 +110,6 @@ def _encode_prompt_batch(
             left_pad=True,
             truncation=truncation,
         )
-        prompt_ids = tokenizer.encode(chat_prompt, add_special_tokens=False)
         if len(prompt_ids) > max_prompt_length:
             if truncation == "left":
                 prompt_ids = prompt_ids[-max_prompt_length:]
@@ -180,10 +220,14 @@ def generate_mind2web_trajectory_batch(
 
     max_steps = max(len(context.trajectory_data["steps"]) for context in contexts)
     step_outputs: list[tuple[DataProto, list[tuple[_TrajectoryContext, dict[str, Any]]]]] = []
-    step_meta = dict(generation_meta)
+    base_meta = dict(generation_meta)
     # We manually create rollout_n trajectories, so each per-step vLLM call must
     # sample exactly one action per active trajectory row.
-    step_meta["n"] = 1
+    base_meta["n"] = 1
+    # Same fixed state_prompt is fed by every rollout_index, so a deterministic
+    # vLLM seed would collapse all `rollout_n` samples to the identical text and
+    # zero the GRPO advantage.  Force per-request random seeds.
+    base_meta["seed"] = None
 
     for step_index in range(max_steps):
         active_rows: list[tuple[_TrajectoryContext, dict[str, Any]]] = []
@@ -194,7 +238,7 @@ def generate_mind2web_trajectory_batch(
                 continue
             step = steps[step_index]
             active_rows.append((context, step))
-            prompts.append(step["state_prompt"])
+            prompts.append(_state_prompt_for_step(context, step_index, step))
 
         if not active_rows:
             continue
@@ -204,7 +248,7 @@ def generate_mind2web_trajectory_batch(
             tokenizer=tokenizer,
             max_prompt_length=max_prompt_length,
             truncation=truncation,
-            meta_info=step_meta,
+            meta_info=base_meta,
         )
         step_batch, pad_size = pad_dataproto_to_divisor(step_batch, actor_rollout_ref_wg.world_size)
         step_output = actor_rollout_ref_wg.generate_sequences(step_batch)
