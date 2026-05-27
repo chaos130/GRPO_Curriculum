@@ -560,6 +560,9 @@ class FSDPWorker(Worker):
         if self._use_optimizer_offload:
             load_fsdp_optimizer(optimizer=self.optimizer)
 
+        torch.cuda.empty_cache()
+        print_gpu_memory_usage("Before update_policy")
+
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
             with Timer(name="update_policy", logger=None) as timer:

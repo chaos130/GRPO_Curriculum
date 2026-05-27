@@ -120,15 +120,20 @@ class BatchFunctionRewardManagerMixin:
             images_i = None
             if mmd is not None and isinstance(mmd[i], dict):
                 images_i = mmd[i].get("images")
-            reward_inputs.append(
-                {
-                    "response": response_str,
-                    "response_length": cur_response_length,
-                    "ground_truth": data.non_tensor_batch["ground_truth"][i],
-                    "uid": str(uids[i]) if uids is not None else f"sample_{i}",
-                    "images": images_i,
-                }
-            )
+            reward_input = {
+                "response": response_str,
+                "response_length": cur_response_length,
+                "ground_truth": data.non_tensor_batch["ground_truth"][i],
+                "uid": str(uids[i]) if uids is not None else f"sample_{i}",
+                "images": images_i,
+            }
+            # Pass through optional per-row metadata (e.g. Mind2Web step_data,
+            # trajectory_id, step_index) without forcing every backend to know
+            # about them — reward functions consume only what they need.
+            for opt_key in ("step_data", "trajectory_id", "step_index", "rollout_index"):
+                if opt_key in data.non_tensor_batch:
+                    reward_input[opt_key] = data.non_tensor_batch[opt_key][i]
+            reward_inputs.append(reward_input)
 
         scores = self.reward_fn(reward_inputs)
         reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
