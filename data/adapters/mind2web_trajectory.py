@@ -17,7 +17,8 @@ from datasets import load_dataset
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer
 
-from prompts.mind2web import build_step_state
+from data.qwen_vl_compat import expand_text_position_ids_for_qwen_vl
+from prompts.mind2web import POLICY_SYSTEM, build_step_state
 from verl.utils import torch_functional as VF
 
 
@@ -29,11 +30,20 @@ class Mind2WebTrajectoryDataset(Dataset):
     states are stored in `trajectory_data.steps[*].state_prompt`.
     """
 
+    @staticmethod
+    def _resolve_split_files(split_file: str) -> str | list[str]:
+        """Allow comma-separated globs, e.g. test_task/*.json,test_website/*.json."""
+
+        if "," not in split_file:
+            return split_file
+        return [part.strip() for part in split_file.split(",") if part.strip()]
+
     def __init__(
         self,
         data_path: str,
         split_file: str,
         tokenizer: PreTrainedTokenizer,
+        hf_split: str = "train",
         max_prompt_length: int = 2048,
         truncation: str = "right",
         candidate_source: str = "ranked",
@@ -44,7 +54,23 @@ class Mind2WebTrajectoryDataset(Dataset):
         keep_html_brackets: bool = False,
         task_filter: str = "none",
         min_positive_ratio: float = 0.0,
+        previous_action_source: str = "gold",
     ) -> None:
+        """Mind2Web task-level dataset.
+
+        Args:
+            previous_action_source: how the rollout adapter builds the
+                "Previous actions" block at step i.
+                - "gold": use the dataset's annotated history `action_reprs[:i]`
+                  (strict offline; same prompt for every rollout sample).
+                - "policy": rebuild from the policy's own sampled actions
+                  `context.generated_actions[:i]` (semi-online; trajectories
+                  diverge across rollouts; tree_repr/DOM is still fixed).
+        """
+
+        if previous_action_source not in {"gold", "policy"}:
+            raise ValueError(f"Unsupported previous_action_source: {previous_action_source}")
+
         self.tokenizer = tokenizer
         self.max_prompt_length = max_prompt_length
         self.truncation = truncation
@@ -55,9 +81,17 @@ class Mind2WebTrajectoryDataset(Dataset):
         self.keep_html_brackets = keep_html_brackets
         self.task_filter = task_filter
         self.min_positive_ratio = min_positive_ratio
+        self.previous_action_source = previous_action_source
 
         self.candidate_results = self._load_candidate_results(score_file)
-        self.dataset = load_dataset(data_path, data_files=split_file, split="all")
+        resolved_files = self._resolve_split_files(split_file)
+        print(f"Loading Mind2Web {hf_split} dataset from: {split_file}", flush=True)
+        self.dataset = load_dataset(
+            data_path,
+            data_files={hf_split: resolved_files},
+            split=hf_split,
+        )
+        print(f"Loaded Mind2Web {hf_split} dataset: {len(self.dataset)} tasks", flush=True)
         self.task_indices = self._build_task_indices()
 
     @staticmethod
@@ -93,7 +127,10 @@ class Mind2WebTrajectoryDataset(Dataset):
         seed_prompt = self._build_seed_prompt(trajectory_data)
 
         prompt_text = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": seed_prompt}],
+            [
+                {"role": "system", "content": POLICY_SYSTEM},
+                {"role": "user", "content": seed_prompt},
+            ],
             add_generation_prompt=True,
             tokenize=False,
         )
@@ -101,6 +138,14 @@ class Mind2WebTrajectoryDataset(Dataset):
         input_ids = model_inputs["input_ids"][0]
         attention_mask = model_inputs["attention_mask"][0]
         position_ids = torch.clip(attention_mask.cumsum(dim=0) - 1, min=0)
+
+        # Reuse `input_ids` instead of re-encoding `prompt_text` for raw_prompt_ids.
+        raw_prompt_ids = input_ids.tolist()
+
+        # Qwen-VL forward requires (4, seq_len) mrope position_ids; for text-only
+        # Mind2Web prompts we replicate the text rope across all 4 channels.
+        position_ids = expand_text_position_ids_for_qwen_vl(position_ids, self.tokenizer)
+
         input_ids, attention_mask, position_ids = VF.postprocess_data(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -110,8 +155,6 @@ class Mind2WebTrajectoryDataset(Dataset):
             left_pad=True,
             truncation=self.truncation,
         )
-
-        raw_prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
         if len(raw_prompt_ids) > self.max_prompt_length:
             raw_prompt_ids = self._truncate_ids(raw_prompt_ids)
 
@@ -181,18 +224,21 @@ class Mind2WebTrajectoryDataset(Dataset):
             target_action = (
                 sample["operation"]["op"] + " " + sample["operation"].get("value", "")
             ).strip()
+            # Keep only fields downstream code (rollout / reward) needs.  In
+            # particular, drop `cleaned_html`, full pos/neg candidate objects:
+            # they balloon the DataProto and Ray serialization once carried
+            # through `trajectory_data` -> step rows.
             step_payload = {
                 "step_index": step_index,
                 "action_uid": sample["action_uid"],
                 "previous_actions": sample["previous_actions"],
-                "cleaned_html": sample["cleaned_html"],
                 "candidate_ids": candidate_ids,
+                # `tree_repr` is the fixed DOM half of the state prompt; we
+                # keep it so the rollout adapter can rebuild `state_prompt`
+                # under `previous_action_source="policy"`.
                 "tree_repr": state["tree_repr"],
-                "seq_input": state["seq_input"],
                 "state_prompt": state["state_prompt"],
                 "choices": state["choices"],
-                "pos_candidates": sample["pos_candidates"],
-                "neg_candidates": sample["neg_candidates"],
                 "pos_ids": pos_ids,
                 "operation": sample["operation"],
                 "target_action": target_action,
@@ -221,6 +267,11 @@ class Mind2WebTrajectoryDataset(Dataset):
             "gold_action_reprs": action_reprs,
             "steps": steps,
             "gold_trajectory": gold_trajectory,
+            # Rollout adapter reads these to decide whether to keep the
+            # dataset's gold state_prompt or rebuild seq_input each step from
+            # the policy's own action history.
+            "previous_action_source": self.previous_action_source,
+            "previous_k": self.previous_k,
         }
 
     def _candidates_with_rank(self, annotation_id: str, action: dict[str, Any], key: str) -> list[dict[str, Any]]:
