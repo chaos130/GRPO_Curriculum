@@ -1,30 +1,32 @@
 data:
   dataset_type: mind2web_trajectory
   rollout_type: mind2web_trajectory
-  train_files: data/train/*.json
-  val_files: data/test_task/*.json
-  max_prompt_length: 4096
-  max_response_length: 256
+  train_files: train/train_0.json
+  val_files: test_task/test_task_0.json
+  max_prompt_length: 2048
+  max_response_length: 128
   rollout_batch_size: 1
   mini_rollout_batch_size: null
   val_batch_size: 1
   shuffle: true
-  seed: 1
+  seed: 42
   filter_overlong_prompts: false
   dataset_kwargs:
-    data_path: /Users/chaos/workplace/data/Mind2Web
+    data_path: /mnt/sda/Xml/workplace/data/Mind2Web/data
     candidate_source: ranked
-    score_file: /Users/chaos/workplace/data/Mind2Web/src/scores_all_data.pkl
+    score_file: /mnt/sda/Xml/workplace/data/Mind2Web/src/scores_all_data.pkl
     top_k: 50
     max_candidates: 20
     previous_k: 5
     keep_html_brackets: false
     task_filter: none
+    previous_action_source: gold
 
 algorithm:
   adv_estimator: grpo
-  disable_kl: false
-  use_kl_loss: true
+  # KL ref adds GPU peak; enable via ENABLE_KL=1 after stable runs
+  disable_kl: true
+  use_kl_loss: false
   kl_penalty: low_var_kl
   kl_coef: 1.0e-2
   online_filtering: false
@@ -36,13 +38,17 @@ worker:
     micro_batch_size_per_device_for_experience: 1
     max_grad_norm: 1.0
     model:
-      model_path: Qwen/Qwen2.5-7B-Instruct
-      trust_remote_code: false
+      model_path: Qwen/Qwen2.5-VL-3B-Instruct
+      trust_remote_code: true
+      freeze_vision_tower: true
+      enable_gradient_checkpointing: true
       lora:
-        rank: 0
+        rank: 32
+        exclude_modules: ".*visual.*"
     optim:
       lr: 1.0e-6
       weight_decay: 1.0e-2
+      strategy: adamw_bf16
     fsdp:
       enable_full_shard: true
       enable_cpu_offload: false
@@ -55,9 +61,11 @@ worker:
     n: 2
     temperature: 0.8
     top_p: 0.95
-    limit_images: 0
-    gpu_memory_utilization: 0.6
-    tensor_parallel_size: 1
+    limit_images: 1
+    gpu_memory_utilization: 0.28
+    max_num_batched_tokens: 2176
+    tensor_parallel_size: 2
+    enforce_eager: false
     val_override_config:
       temperature: 0.6
       top_p: 0.95
@@ -69,7 +77,7 @@ worker:
       enable_cpu_offload: true
       enable_rank0_init: true
     offload:
-      offload_params: false
+      offload_params: true
 
   reward:
     reward_function: ../rewards/mind2web_trajectory.py:compute_score
@@ -79,16 +87,16 @@ trainer:
   max_steps: null
   project_name: grpo_curriculum
   experiment_name: mind2web_trajectory_grpo
-  logger: ["console"]
+  logger: ["console", "wandb"]
   nnodes: 1
-  n_gpus_per_node: 1
+  n_gpus_per_node: 2
   max_try_make_batch: 5
-  val_freq: -1
+  val_freq: 10
   val_before_train: false
-  val_after_train: false
-  val_generations_to_log: 0
-  save_freq: -1
-  save_limit: 1
+  val_after_train: true
+  val_generations_to_log: 4
+  save_freq: 50
+  save_limit: 3
   save_model_only: false
   save_checkpoint_path: null
   load_checkpoint_path: null
