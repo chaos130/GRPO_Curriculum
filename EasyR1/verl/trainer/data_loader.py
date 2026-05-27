@@ -74,6 +74,7 @@ def create_dataset(
         return Mind2WebTrajectoryDataset(
             data_path=data_root,
             split_file=data_path,
+            hf_split="train" if split == "train" else "validation",
             tokenizer=tokenizer,
             max_prompt_length=config.max_prompt_length,
             truncation="right",

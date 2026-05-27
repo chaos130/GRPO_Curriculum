@@ -129,6 +129,7 @@ def main():
         }
         # 转发 LLM-as-Judge / wandb 相关 env 到 Ray worker（reward function 跑在 Ray actor 里）
         for key in (
+            "CUDA_VISIBLE_DEVICES",
             "JUDGE_ENABLED",
             "JUDGE_API_KEY",
             "JUDGE_BASE_URL",
@@ -140,6 +141,10 @@ def main():
             "WANDB_API_KEY",
             "WANDB_DIR",
             "WANDB_PROJECT",
+            "TMPDIR",
+            "HF_HOME",
+            "HF_DATASETS_CACHE",
+            "HF_HUB_CACHE",
         ):
             value = os.environ.get(key)
             if value is not None:
