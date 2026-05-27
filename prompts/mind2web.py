@@ -25,6 +25,22 @@ if _MIND2WEB_SRC.as_posix() not in sys.path:
 from data_utils.dom_utils import get_tree_repr, prune_tree  # type: ignore  # noqa: E402
 
 
+POLICY_SYSTEM = (
+    "You are a careful web-navigation agent. Given a webpage's pruned HTML "
+    "tree and a user task, pick ONE interactable element from the tree (each "
+    "candidate is annotated with id=<N>) and decide the next action.\n"
+    "\n"
+    "Output format (STRICT — output ONLY this, no extra text, no thoughts):\n"
+    "Element: (<tag> id=<N> <short description copied from the tree>)\n"
+    "Action: CLICK | SELECT | TYPE\n"
+    "Value: <required for SELECT/TYPE; omit the Value line entirely for CLICK>\n"
+    "\n"
+    "If no element in the tree is appropriate for this step:\n"
+    "Element: None\n"
+    "Action: NONE\n"
+)
+
+
 def build_seq_input(confirmed_task: str, previous_actions: list[str], previous_k: int = 5) -> str:
     """Build the textual task/history instruction used by Mind2Web SFT.
 
@@ -47,8 +63,7 @@ def build_seq_input(confirmed_task: str, previous_actions: list[str], previous_k
     # Keep the original wording, including the missing space after '?'.
     seq_input += (
         "What should be the next action?"
-        "Please select the element to interact with, and the action to perform along with the value to type in or select. "
-        "If the task cannot be completed, output None."
+        "Please select the element to interact with, and the action to perform along with the value to type in or select. "       
     )
     return seq_input
 
