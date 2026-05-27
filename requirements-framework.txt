@@ -1,0 +1,3 @@
+# Mind2Web trajectory GRPO framework layer (install inside EasyR1 / verl Docker image).
+# EasyR1 already provides torch, transformers, datasets, ray, etc.
+lxml>=4.9.0
