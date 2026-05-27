@@ -9,9 +9,12 @@ GRPO_Curriculum/
 ├── rollout/         # 框架层 rollout adapters
 ├── rewards/         # 框架层 reward helpers / smoke rewards
 ├── configs/         # 框架层实验配置
-├── EasyR1/          # GRPO/verl 训练后端 + Android GUI 定制
-└── Mind2Web/        # Mind2Web 原始数据集与基线代码（见官方文档）
+├── scripts/         # 框架层运行/调试脚本（不放进 EasyR1 / Mind2Web）
+├── EasyR1/          # GRPO/verl 训练后端（仅后端与 Android 实验）
+└── Mind2Web/        # Mind2Web 数据集与基线代码（仅后端）
 ```
+
+**约定**：Mind2Web / EasyR1 当作后端使用；新实验的 shell、smoke test 等放在仓库根目录 `scripts/` 与 `configs/`，不要写入 `EasyR1/examples/` 或 `Mind2Web/`。
 
 ---
 
@@ -257,9 +260,27 @@ bash examples/qwen2_5_vl_3b_android_gui_grpo.sh
 
 ## 快速入口
 
+**Android GUI（脚本在 EasyR1 上游示例内，属历史路径）**
+
 ```bash
 cd EasyR1 && pip install -e . && bash examples/qwen2_5_vl_3b_android_gui_grpo.sh
 ```
+
+**Mind2Web trajectory rollout 调试（框架层脚本）**
+
+```bash
+cd EasyR1 && pip install -e .
+pip install -r ../requirements-framework.txt   # lxml（Mind2Web DOM）
+cd ..
+
+# 1) 无 GPU：检查数据与 state_prompt 构造
+python scripts/smoke_mind2web_dataset.py
+
+# 2) 有 GPU：只跑 validation rollout（不更新权重）
+bash scripts/mind2web_trajectory_debug_rollout.sh
+```
+
+训练配置见 `configs/mind2web_trajectory_grpo.yaml`；启动时 `cd EasyR1` 后把该 yaml 传给 `verl.trainer.main` 即可。
 
 ## 未纳入版本库的大文件
 
