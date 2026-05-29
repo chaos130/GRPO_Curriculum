@@ -266,6 +266,29 @@ class RayPPOTrainer:
 
         return self.config.data.rollout_type == "mind2web_trajectory"
 
+    def _val_sample_labels(self, batch: DataProto) -> list[str]:
+        """Per-row labels for val/generations logging.
+
+        Mind2Web trajectory rows carry task-level ``ground_truth`` (full gold
+        trajectory JSON) on every step, but reward uses ``step_data.seq_target``.
+        Log the per-step target so W&B label columns align with output.
+        """
+
+        ground_truths = batch.non_tensor_batch["ground_truth"].tolist()
+        step_datas = batch.non_tensor_batch.get("step_data")
+        if step_datas is None:
+            return ground_truths
+
+        labels: list[str] = []
+        for index, step_data in enumerate(step_datas):
+            if isinstance(step_data, dict):
+                seq_target = step_data.get("seq_target")
+                if seq_target is not None:
+                    labels.append(str(seq_target))
+                    continue
+            labels.append(str(ground_truths[index]) if index < len(ground_truths) else "")
+        return labels
+
     def _get_policy_update_pad_divisor(self) -> int:
         """Pad trajectory rollout batches so each DP rank can split mini-batches evenly."""
 
@@ -524,7 +547,7 @@ class RayPPOTrainer:
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_inputs.extend(input_texts)
             sample_outputs.extend(output_texts)
-            sample_labels.extend(test_batch.non_tensor_batch["ground_truth"].tolist())
+            sample_labels.extend(self._val_sample_labels(test_batch))
             sample_scores.extend(scores)
 
             reward_tensor_lst.append(reward_tensor)

@@ -7,7 +7,7 @@ GRPO_Curriculum/
 ├── data/            # 框架层 dataset adapters
 ├── prompts/         # 框架层 prompt/state builders
 ├── rollout/         # 框架层 rollout adapters
-├── rewards/         # 框架层 reward helpers / smoke rewards
+├── rewards/         # 框架层 reward（Mind2Web step reward + 单元测试）
 ├── configs/         # 框架层实验配置
 ├── scripts/         # 框架层运行/调试脚本（不放进 EasyR1 / Mind2Web）
 ├── EasyR1/          # GRPO/verl 训练后端（仅后端与 Android 实验）
@@ -18,147 +18,158 @@ GRPO_Curriculum/
 
 ---
 
-## Mind2Web Trajectory GRPO 框架
+## Mind2Web Trajectory GRPO
 
-新增代码实现了 **Mind2Web offline trajectory-level GRPO** 的第一版框架。它不是把 Mind2Web 离线转换成 EasyR1 现有 step 数据格式，而是保留 Mind2Web 原始 task/trajectory 结构：
+在 Mind2Web **离线固定状态**上做多步 Web Agent 的 GRPO 训练。一个样本是一条完整 task 轨迹，rollout 时对每个固定状态 `S_i` 采样 `rollout.n` 条动作，再展开为 step 行做 reward / GRPO / actor 更新。
 
 ```text
 task = (S1, A1*, S2, A2*, ..., St, At*)
+S_i = tree_repr_i + seq_input_i   # prompts/mind2web.py
 ```
 
-其中每一步状态 `S_i` 定义为输入给 policy LLM 的提示词：
+状态序列来自数据集（离线）；策略只学习在固定 `S_i` 上选动作。
 
-```text
-S_i = tree_repr_i + seq_input_i
-```
-
-- `tree_repr_i`：由 `cleaned_html_i` 按 `candidate_ids_i` 裁剪 DOM 后得到。
-- `seq_input_i`：由 `confirmed_task` 和 `previous_actions` 构造，沿用 Mind2Web 原生 SFT prompt 文字。
-- 状态序列 `S1...St` 来自 Mind2Web 离线数据，是固定的；rollout 时采样的是动作序列。
-
-### 1. 新增框架层模块
+### 1. 框架层模块
 
 | 文件 | 作用 |
 |------|------|
-| `prompts/mind2web.py` | 复刻并拆分 Mind2Web 的状态构造逻辑：`tree_repr`、`seq_input`、`state_prompt`、`seq_target` |
-| `data/adapters/mind2web_trajectory.py` | task-level Dataset adapter；一个样本是一条 Mind2Web task trajectory，而不是单个 step |
-| `rollout/mind2web_trajectory_rollout.py` | offline trajectory rollout；对同一 task 固定状态序列采样 `rollout.n` 条动作轨迹 |
-| `rewards/mind2web_trajectory.py` | smoke-test reward，仅检查 step action 是否可解析；正式 trajectory reward 后续实现 |
-| `configs/mind2web_trajectory_grpo.yaml` | Mind2Web trajectory GRPO 的最小示例配置 |
+| `prompts/mind2web.py` | `POLICY_SYSTEM`、DOM 裁剪、`state_prompt` / `seq_target` 构造 |
+| `data/adapters/mind2web_trajectory.py` | task-level Dataset；只返回 `trajectory_data` + `ground_truth`（不在此处 tokenize） |
+| `rollout/mind2web_trajectory_rollout.py` | 固定状态多轨迹 rollout；逐步调用 vLLM，展开为 step 行 |
+| `rewards/mind2web_trajectory.py` | 逐步 reward：`format`（连续结构分）+ `answer`（action / id / value） |
+| `rewards/test_mind2web_trajectory.py` | reward 单元测试 |
+| `configs/mind2web_trajectory_grpo.yaml` | 默认实验配置（对齐 wandb run `mind2web_trajectory_grpo_20260527_115746` 并含后续修正） |
+| `scripts/mind2web_trajectory_grpo.sh` | 正式训练入口 |
+| `scripts/mind2web_trajectory_debug_rollout.sh` | 仅 validation rollout 调试 |
+| `scripts/smoke_mind2web_dataset.py` | CPU 检查数据与 `state_prompt` |
+| `scripts/env_defaults.sh` | 机器路径（`MIND2WEB_DATA`、`MODEL_PATH` 等），不含 API key |
 
-### 2. EasyR1 后端接入点
+### 2. 训练数据流
+
+```text
+Mind2Web JSON
+  → Mind2WebTrajectoryDataset（1 样本 = 1 task，含 steps[].state_prompt）
+  → ray_trainer._make_batch_data（贴 task 级 uuid）
+  → generate_mind2web_trajectory_batch（每步 tokenize state_prompt → vLLM 生成 action）
+  → 展开为 step 行（batch 大小 = Σ steps × rollout.n）
+  → reward（逐步打分）→ GRPO advantage（Per-state 分组）→ update_actor（+ KL loss）
+```
+
+**Tokenize 只发生在 rollout**：Dataset 不再构造无用的 seed `input_ids`；每步在 `rollout/mind2web_trajectory_rollout.py` 里对 `state_prompt` 编码。
+
+### 3. Dataset 输出
+
+`Mind2WebTrajectoryDataset.__getitem__` 返回：
+
+| 字段 | 含义 |
+|------|------|
+| `trajectory_data` | 整条 task：`steps[]`（含 `state_prompt`、`seq_target`、`tree_repr` 等）、`previous_action_source` |
+| `ground_truth` | JSON 字符串，整条 gold 轨迹（task 级） |
+
+每个 `steps[i]` 保留：`step_index`、`action_uid`、`state_prompt`、`seq_target`、`tree_repr`、`choices`、`operation` 等（不含原始 `cleaned_html`，减小 Ray 序列化体积）。
+
+`dataset_kwargs.previous_action_source`：
+
+- `gold`（默认）：每步 prompt 用数据集标注的历史动作
+- `policy`：用当前 rollout 已采样动作重建 `seq_input`（DOM 仍固定）
+
+### 4. Rollout 与 GRPO 分组
+
+对每个 task 创建 `rollout.n` 条轨迹 context，按 `step_index` 循环调用 `generate_sequences`（每步 `n=1`，随机 seed 避免两条 rollout 完全相同）。
+
+展开后每行 metadata：
+
+| 字段 | 含义 |
+|------|------|
+| `task_uid` | 本 batch 内该 task 的 uuid（数 `rollout_batch_size`、rollout JSON 聚合用） |
+| `uid` | **GRPO 分组键** = `{task_uid}:{step_index}`（Per-state：同一步的 n 条 rollout 一组） |
+| `trajectory_id` | `{task_uid}:{rollout_index}` |
+| `step_index` / `action_uid` | 步序号 / 数据集动作 id |
+| `step_data` | 该步 gold 与 DOM 元数据（reward 读 `seq_target`） |
+
+GRPO advantage 使用 `uid` 做组内减均值除标准差，因此比较的是 **同一固定状态上的多条采样**，而不是整 task 所有 step 混在一起。
+
+### 5. Reward（`mind2web_trajectory_step`）
+
+逐步 outcome reward，写入每行 response 末 token：
+
+```text
+overall = 0.5 × format + 0.5 × answer
+```
+
+| 子项 | 说明 |
+|------|------|
+| `format` | 连续结构分（1.0 起按缺失字段 / 多余行线性扣分）；行首锚定正则 `^Element:` / `^Action:` / `^Value:` |
+| `answer` | `0.3×action_hit + 0.4×id_hit + 0.3×value_hit`（与 gold `seq_target` 比） |
+
+`format` 不重复惩罚 Value 行内容（由 `value_hit` 负责），避免双重扣分；连续 `format` 有助于 GRPO 在 answer 相同时仍能拉开组内方差。
+
+WandB 指标示例：`val/id_hit_reward`、`val/format_reward`、`val/reward_score` 等。
+
+### 6. EasyR1 后端接入（Mind2Web 相关）
 
 | 文件 | 改动 |
 |------|------|
-| `EasyR1/verl/trainer/config.py` | 新增 `data.dataset_type`、`data.rollout_type`、`data.dataset_kwargs` |
-| `EasyR1/verl/trainer/data_loader.py` | 新增 dataset factory；默认仍走 `RLHFDataset`，`mind2web_trajectory` 时走新 adapter |
-| `EasyR1/verl/trainer/ray_trainer.py` | 新增 `rollout_type == mind2web_trajectory` 分支；默认 rollout 路径保持不变 |
+| `verl/trainer/config.py` | `dataset_type` / `rollout_type` / `dataset_kwargs`；`worker.trajectory_rollout` |
+| `verl/trainer/data_loader.py` | `mind2web_trajectory` → `Mind2WebTrajectoryDataset` |
+| `verl/trainer/ray_trainer.py` | trajectory rollout 分支；`_pad_batch_for_policy_update`；`_val_sample_labels`（W&B 用 `seq_target` 作 label）；`task_uid` 计数 |
+| `verl/workers/fsdp_workers.py` | `global_batch_size × rollout.n`；多卡 `per_device ≥ 1` |
+| `verl/utils/logger/gen_logger.py` | W&B val 表截断长 DOM；上传失败不中断训练 |
+| `verl/utils/rollout_trajectory.py` | rollout JSON 按 `task_uid` 聚合 task → trajectory → step |
+| `verl/trainer/main.py` | 转发 `WANDB_API_KEY` / `WANDB_DIR` / `WANDB_PROJECT` 等到 Ray worker |
 
-默认配置仍是：
+默认 `dataset_type: rlhf` / `rollout_type: default` 时，Android GUI 等原有路径不变。
 
-```yaml
-data:
-  dataset_type: rlhf
-  rollout_type: default
+### 7. 默认配置要点
+
+见 `configs/mind2web_trajectory_grpo.yaml`：
+
+| 项 | 默认 | 说明 |
+|----|------|------|
+| `train_files` / `val_files` | `train/train_0.json`、`test_task/test_task_0.json` | 可用环境变量 `TRAIN_FILES` / `VAL_FILES` 覆盖 |
+| `max_prompt_length` | 4096 | 逐步 `state_prompt` 编码上限（Mind2Web DOM 较长） |
+| `max_response_length` | 256 | 单步 action 生成长度 |
+| `rollout_batch_size` | 1 | 每训练 step 几个 **task** |
+| `worker.rollout.n` | 2 | 每 task 几条采样轨迹（GRPO 组内大小） |
+| `worker.actor.global_batch_size` | 1 | yaml 值；worker 内 × `rollout.n` 用于多卡 |
+| `algorithm.use_kl_loss` | true | ref 策略 KL 进 actor loss，抑制 reward hacking |
+| `val_freq` / `save_freq` | 10 / 50 | 验证与存 checkpoint 频率 |
+| `val_generations_to_log` | 4 | 每次 val 写入 W&B `val/generations` 的样本数 |
+
+`max_num_batched_tokens` 需 ≥ `max_prompt_length + max_response_length`（默认 4352）。
+
+### 8. 运行
+
+```bash
+cd EasyR1 && pip install -e .
+pip install -r ../requirements-framework.txt   # lxml
+cd ..
+
+# CPU：检查数据
+python scripts/smoke_mind2web_dataset.py
+
+# GPU：仅 rollout + reward（不更新权重）
+bash scripts/mind2web_trajectory_debug_rollout.sh
+
+# 正式训练（路径见 scripts/env_defaults.sh）
+export WANDB_API_KEY=...          # 默认 LOGGER 含 wandb；无 key 时用 LOGGER='["console"]'
+export WANDB_MODE=offline         # 外网不稳时推荐，日志在 EasyR1/wandb/
+bash scripts/mind2web_trajectory_grpo.sh
 ```
 
-因此已有 EasyR1 / Android GUI 训练脚本不受影响。
+常用 override：
 
-### 3. Mind2Web Dataset 输出契约
-
-`Mind2WebTrajectoryDataset` 保持 EasyR1 batch contract，返回：
-
-```text
-input_ids
-attention_mask
-position_ids
-raw_prompt_ids
-ground_truth
-trajectory_data
+```bash
+LOGGER='["console"]' bash scripts/mind2web_trajectory_grpo.sh
+TRAIN_FILES='train/*.json' VAL_FILES='test_task/*.json' bash scripts/mind2web_trajectory_grpo.sh
+PREVIOUS_ACTION_SOURCE=policy bash scripts/mind2web_trajectory_grpo.sh
 ```
 
-其中 `input_ids/raw_prompt_ids` 是 task-level seed prompt，用于兼容 EasyR1 数据接口；真正用于 policy rollout 的每一步状态在：
+Checkpoint：`EasyR1/checkpoints/grpo_curriculum/<experiment_name>/`（`find_last_checkpoint: true` 可续训）。
 
-```text
-trajectory_data["steps"][i]["state_prompt"]
-```
+**W&B 查看 val 样例**：在 run 的 **Media / Tables** 里打开 `val/generations` 并选择 **step**；不要用 `runs.summary["val/generations"]` 表达式（Summary 视图常只显示行号、看不到单元格）。
 
-每个 step 保留：
-
-```text
-step_index
-action_uid
-candidate_ids
-tree_repr
-seq_input
-state_prompt
-choices
-pos_candidates / neg_candidates
-pos_ids
-operation
-target_action
-seq_target
-valid_positive
-```
-
-### 4. Rollout 过程
-
-Mind2Web trajectory rollout 的单位是一个 task，而不是 step：
-
-```text
-同一个 task
-  固定状态序列 S1...St
-  采样 rollout.n 条动作轨迹
-```
-
-实现上 `rollout/mind2web_trajectory_rollout.py` 会：
-
-1. 对 batch 中每个 task 创建 `rollout.n` 个 trajectory context。
-2. 对第 `i` 个固定状态 `S_i` 调用 EasyR1 现有 `actor_rollout_ref_wg.generate_sequences`。
-3. 收集每条轨迹的 step responses。
-4. 将结果展开为 EasyR1 可继续训练的 step-action rows，并附带：
-   - `uid`
-   - `trajectory_id`
-   - `rollout_index`
-   - `step_index`
-   - `step_data`
-   - `trajectory_data`
-   - `predicted_trajectory`
-
-后续 reward 可以基于 `trajectory_id` 聚合整条轨迹得分，再回填到同一条轨迹的 step action 上。
-
-### 5. 示例配置
-
-配置文件：
-
-```text
-configs/mind2web_trajectory_grpo.yaml
-```
-
-关键字段：
-
-```yaml
-data:
-  dataset_type: mind2web_trajectory
-  rollout_type: mind2web_trajectory
-  train_files: data/train/*.json
-  val_files: data/test_task/*.json
-  dataset_kwargs:
-    data_path: /Users/chaos/workplace/data/Mind2Web
-    candidate_source: ranked
-    score_file: /Users/chaos/workplace/data/Mind2Web/src/scores_all_data.pkl
-    top_k: 50
-    max_candidates: 20
-    previous_k: 5
-    keep_html_brackets: false
-    task_filter: none
-
-worker:
-  rollout:
-    n: 2
-```
-
-当前 `rewards/mind2web_trajectory.py` 只是 smoke-test reward，不代表最终训练目标。下一步应实现真正的 trajectory-level reward。
+更细的脚本说明见 `scripts/README.md`。
 
 ---
 
@@ -260,27 +271,22 @@ bash examples/qwen2_5_vl_3b_android_gui_grpo.sh
 
 ## 快速入口
 
-**Android GUI（脚本在 EasyR1 上游示例内，属历史路径）**
+**Mind2Web trajectory GRPO（推荐路径）**
+
+```bash
+cd EasyR1 && pip install -e .
+pip install -r ../requirements-framework.txt
+cd ..
+bash scripts/mind2web_trajectory_grpo.sh
+```
+
+**Android GUI（历史路径，脚本在 EasyR1/examples/）**
 
 ```bash
 cd EasyR1 && pip install -e . && bash examples/qwen2_5_vl_3b_android_gui_grpo.sh
 ```
 
-**Mind2Web trajectory rollout 调试（框架层脚本）**
-
-```bash
-cd EasyR1 && pip install -e .
-pip install -r ../requirements-framework.txt   # lxml（Mind2Web DOM）
-cd ..
-
-# 1) 无 GPU：检查数据与 state_prompt 构造
-python scripts/smoke_mind2web_dataset.py
-
-# 2) 有 GPU：只跑 validation rollout（不更新权重）
-bash scripts/mind2web_trajectory_debug_rollout.sh
-```
-
-训练配置见 `configs/mind2web_trajectory_grpo.yaml`；启动时 `cd EasyR1` 后把该 yaml 传给 `verl.trainer.main` 即可。
+更完整的 Android 部署与采集见 `EasyR1/examples/android_gui_cookbook/README.md`。
 
 ## 未纳入版本库的大文件
 

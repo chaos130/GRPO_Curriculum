@@ -25,6 +25,18 @@ if is_package_available("wandb"):
     import wandb  # type: ignore
 
 
+# W&B table UI often fails to render cells with multi-kB prompt/DOM text.
+_WANDB_TABLE_CELL_MAX_CHARS = 1500
+
+
+def _truncate_for_wandb_table(text: str, max_chars: int = _WANDB_TABLE_CELL_MAX_CHARS) -> str:
+    text = str(text)
+    if len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    return f"{text[:max_chars]}\n... [{omitted} chars truncated for W&B display]"
+
+
 if is_package_available("swanlab"):
     import swanlab  # type: ignore
 
@@ -69,14 +81,24 @@ class WandbGenerationLogger(GenerationLogger):
         # Workaround for https://github.com/wandb/wandb/issues/2981#issuecomment-1997445737
         new_table = wandb.Table(columns=columns, data=self.validation_table.data)
 
-        # Add new row with all data
+        # Add new row with all data (truncate long Mind2Web prompts for W&B UI).
         row_data = [step]
-        for sample in samples:
-            row_data.extend(sample)
+        for inp, out, lab, score in samples:
+            row_data.extend(
+                [
+                    _truncate_for_wandb_table(inp),
+                    _truncate_for_wandb_table(out),
+                    _truncate_for_wandb_table(lab),
+                    score,
+                ]
+            )
 
         new_table.add_data(*row_data)
-        wandb.log({"val/generations": new_table}, step=step)
-        self.validation_table = new_table
+        try:
+            wandb.log({"val/generations": new_table}, step=step)
+            self.validation_table = new_table
+        except Exception as exc:
+            print(f"[wandb] val/generations log failed at step {step}: {exc}", flush=True)
 
 
 @dataclass
@@ -110,4 +132,7 @@ class AggregateGenerationsLogger:
 
     def log(self, samples: List[Tuple[str, str, str, float]], step: int) -> None:
         for logger in self.loggers:
-            logger.log(samples, step)
+            try:
+                logger.log(samples, step)
+            except Exception as exc:
+                print(f"[gen_logger] {type(logger).__name__} failed at step {step}: {exc}", flush=True)

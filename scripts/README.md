@@ -9,9 +9,10 @@
 
 | 脚本 | 说明 |
 |------|------|
+| `env_defaults.sh` | 机器路径（`MIND2WEB_DATA`、`MODEL_PATH`、HF 缓存）；不含 API key |
 | `smoke_mind2web_dataset.py` | CPU：加载 1 条 task，检查 `state_prompt` / `trajectory_data` |
 | `mind2web_trajectory_debug_rollout.sh` | GPU：`max_steps=1` 跑通固定状态轨迹 rollout + reward |
-| `mind2web_trajectory_grpo.sh` | GPU：Mind2Web trajectory GRPO 正式训练（checkpoint / val / rollout JSON） |
+| `mind2web_trajectory_grpo.sh` | GPU：Mind2Web trajectory GRPO 正式训练 |
 
 环境：
 
@@ -22,38 +23,37 @@ pip install -r ../requirements-framework.txt   # lxml 等 Mind2Web 框架依赖
 
 `mind2web_trajectory_debug_rollout.sh` 会在缺少 `lxml` 时自动 pip 安装。
 
-训练示例（默认启用 wandb；未设置 `WANDB_API_KEY` 会直接报错）：
+## 正式训练
+
+默认读 `configs/mind2web_trajectory_grpo.yaml` 中的 `train_files` / `val_files`（当前为单 shard baseline）。
 
 ```bash
-export WANDB_API_KEY=...   # https://wandb.ai/authorize
-cd EasyR1 && pip install -e .
-pip install -r ../requirements-framework.txt
-bash ../scripts/mind2web_trajectory_grpo.sh
+cd /path/to/GUI_GRPO
+bash scripts/mind2web_trajectory_grpo.sh
+```
+
+WandB（可选）：
+
+```bash
+export WANDB_API_KEY=...                    # 无 key 时用 LOGGER='["console"]'
+export WANDB_MODE=offline                   # Docker 外网不稳时推荐
+bash scripts/mind2web_trajectory_grpo.sh
 ```
 
 常用 override：
 
 ```bash
-# 默认 `train_0.json` + `test_task_0.json`；全量数据：
-TRAIN_FILES=/workspace/data/Mind2Web/data/train/*.json \
-VAL_FILES=/workspace/data/Mind2Web/data/test_*/*.json \
-bash scripts/mind2web_trajectory_grpo.sh
+# 全量 shard
+TRAIN_FILES='train/*.json' VAL_FILES='test_task/*.json,test_website/*.json' \
+  bash scripts/mind2web_trajectory_grpo.sh
 
-# 单 shard 调试：
-TRAIN_FILE=/workspace/data/Mind2Web/data/train/train_0.json \
-MAX_STEPS=100 \
-PREVIOUS_ACTION_SOURCE=policy \
-bash scripts/mind2web_trajectory_grpo.sh
-
-# 仅 console，不用 wandb
+# 仅 console
 LOGGER='["console"]' bash scripts/mind2web_trajectory_grpo.sh
+
+# policy 历史（轨迹间 seq_input 随采样动作变化）
+PREVIOUS_ACTION_SOURCE=policy bash scripts/mind2web_trajectory_grpo.sh
 ```
 
-Checkpoint 默认写入 `EasyR1/checkpoints/grpo_curriculum/<experiment_name>/`。
+Checkpoint：`EasyR1/checkpoints/grpo_curriculum/<experiment_name>/`。
 
-路径：`scripts/env_defaults.sh` 会在检测到 `/workspace/model` 与 `/workspace/data` 时使用 Docker 挂载路径，否则使用宿主机 `/mnt/sda/Xml/workplace/...`。也可手动 export：
-
-```bash
-export MODEL_PATH=/workspace/model/Qwen/Qwen2.5-VL-3B-Instruct
-export MIND2WEB_DATA=/workspace/data/Mind2Web/data
-```
+路径：`env_defaults.sh` 在检测到 `/workspace/model` 与 `/workspace/data` 时使用 Docker 挂载路径，否则使用宿主机 `/mnt/sda/Xml/workplace/...`。

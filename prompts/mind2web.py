@@ -29,7 +29,7 @@ POLICY_SYSTEM = (
     "tree and a user task, pick ONE interactable element from the tree (each "
     "candidate is annotated with id=<N>) and decide the next action.\n"
     "\n"
-    "Your output must be no more than xxx tokens.\n"
+    "Your output must be no more than 30 tokens.\n"
     "\n"
     "Output format (STRICT — output ONLY this, no extra text, no thoughts):\n"
     "Element: (<tag> id=<N> <short description copied from the tree>)\n"
