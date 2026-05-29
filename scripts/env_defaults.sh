@@ -24,7 +24,5 @@ fi
 : "${HF_DATASETS_CACHE:=${HF_HOME}/datasets}"
 : "${HF_HUB_CACHE:=${HF_HOME}/hub}"
 
-: "${TRAIN_FILE:=${MIND2WEB_DATA}/train/train_0.json}"
-: "${VAL_FILE:=${MIND2WEB_DATA}/test_task/test_task_0.json}"
-: "${TRAIN_FILES:=${TRAIN_FILE}}"
-: "${VAL_FILES:=${VAL_FILE}}"
+# Optional: export TRAIN_FILES / VAL_FILES to override yaml (e.g. train/*.json).
+# Default train/val shards are in configs/mind2web_trajectory_grpo.yaml (115746 baseline).

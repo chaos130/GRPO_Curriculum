@@ -156,9 +156,17 @@ def _attach_step_metadata(
     active_rows: list[tuple[_TrajectoryContext, dict[str, Any]]],
     task_ground_truths: np.ndarray,
 ) -> None:
-    """Attach task/trajectory metadata to generated step rows."""
+    """Attach task/trajectory metadata to generated step rows.
 
-    step_output.non_tensor_batch["uid"] = _object_array([row[0].uid for row in active_rows])
+    Per-state GRPO: ``uid`` groups rows that share the same fixed state (one task step).
+    ``rollout.n`` rows per group compare at that state.  ``task_uid`` keeps the batch-level
+    task id for rollout_batch_size counting and trajectory JSON dumps.
+    """
+
+    step_output.non_tensor_batch["task_uid"] = _object_array([row[0].uid for row in active_rows])
+    step_output.non_tensor_batch["uid"] = _object_array(
+        [f"{row[0].uid}:{row[1]['step_index']}" for row in active_rows]
+    )
     step_output.non_tensor_batch["trajectory_id"] = _object_array([row[0].trajectory_id for row in active_rows])
     step_output.non_tensor_batch["rollout_index"] = _object_array([row[0].rollout_index for row in active_rows])
     step_output.non_tensor_batch["step_index"] = _object_array([row[1]["step_index"] for row in active_rows])

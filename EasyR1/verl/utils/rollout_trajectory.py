@@ -244,11 +244,12 @@ def _build_trajectory_grouped_dict(
     """Mind2Web-style dump: task -> trajectory -> step.
 
     Expects `non_tensor_batch` to carry `uid`, `trajectory_id`, `step_index`.
+    When present, `task_uid` groups rows by Mind2Web task (`uid` is per-state GRPO key).
     Optional fields used when present: `rollout_index`, `step_data`,
     `predicted_trajectory`, `ground_truth`.
     """
 
-    uids = batch.non_tensor_batch["uid"]
+    task_uids = batch.non_tensor_batch.get("task_uid", batch.non_tensor_batch["uid"])
     trajectory_ids = batch.non_tensor_batch["trajectory_id"]
     step_indices = batch.non_tensor_batch["step_index"]
     rollout_indices = batch.non_tensor_batch.get("rollout_index")
@@ -265,8 +266,8 @@ def _build_trajectory_grouped_dict(
     task_order: list[str] = []
     task_to_traj_order: dict[str, list[str]] = defaultdict(list)
     nested: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
-    for sample_index, (uid, traj_id) in enumerate(zip(uids, trajectory_ids)):
-        uid = str(uid)
+    for sample_index, (task_uid, traj_id) in enumerate(zip(task_uids, trajectory_ids)):
+        uid = str(task_uid)
         traj_id = str(traj_id)
         if uid not in nested:
             task_order.append(uid)

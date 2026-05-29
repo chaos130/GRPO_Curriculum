@@ -266,6 +266,28 @@ class RayPPOTrainer:
 
         return self.config.data.rollout_type == "mind2web_trajectory"
 
+    def _get_policy_update_pad_divisor(self) -> int:
+        """Pad trajectory rollout batches so each DP rank can split mini-batches evenly."""
+
+        gb = self.config.worker.actor.global_batch_size
+        if not self._is_mind2web_trajectory_rollout() and self.config.worker.rollout.n > 1:
+            gb *= self.config.worker.rollout.n
+        n_gpus = self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes
+        return max(gb, n_gpus)
+
+    def _pad_batch_for_policy_update(self, batch: DataProto) -> DataProto:
+        divisor = self._get_policy_update_pad_divisor()
+        if len(batch) % divisor == 0:
+            return batch
+        batch, pad_size = pad_dataproto_to_divisor(batch, divisor)
+        if pad_size:
+            print(
+                f"[mind2web_trajectory] Padded batch {len(batch) - pad_size} -> {len(batch)} "
+                f"(pad_size={pad_size}, divisor={divisor}) for actor/critic update.",
+                flush=True,
+            )
+        return batch
+
     def init_workers(self) -> None:
         """Init resource pool and worker group"""
         self.resource_pool_manager.create_resource_pool()
@@ -450,7 +472,7 @@ class RayPPOTrainer:
                 # Validation also samples complete fixed-state trajectories, but
                 # uses the validation override for rollout count/temperature.
                 test_batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
+                    [str(uuid.uuid4()) for _ in range(len(test_batch))], dtype=object
                 )
                 repeat_times = self.config.worker.rollout.val_override_config.get("n", 1)
                 generation_meta = {
@@ -557,7 +579,7 @@ class RayPPOTrainer:
             }
             new_batch: DataProto = DataProto.from_single_dict(batch_dict, meta_info=meta_info)
             new_batch.non_tensor_batch["uid"] = np.array(
-                [str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object
+                [str(uuid.uuid4()) for _ in range(len(new_batch))], dtype=object
             )
 
             if self._is_mind2web_trajectory_rollout():
@@ -574,7 +596,10 @@ class RayPPOTrainer:
                     skip_special_tokens=self.config.worker.reward.skip_special_tokens,
                 )
                 batch = DataProto.concat([batch, new_batch]) if batch is not None else new_batch
-                current_batch_size = len({str(uid) for uid in batch.non_tensor_batch["uid"]})
+                if "task_uid" in batch.non_tensor_batch:
+                    current_batch_size = len({str(uid) for uid in batch.non_tensor_batch["task_uid"]})
+                else:
+                    current_batch_size = len({str(uid) for uid in batch.non_tensor_batch["uid"]})
                 rollout_batch_size = self.config.data.rollout_batch_size
                 if current_batch_size >= rollout_batch_size:
                     print(f"{current_batch_size=} >= {rollout_batch_size=}. Finish generating.")
@@ -765,6 +790,9 @@ class RayPPOTrainer:
                         reward_metrics=rollout_reward_metrics,
                         reward_extras=rollout_reward_extras,
                     )
+
+                if self._is_mind2web_trajectory_rollout():
+                    batch = self._pad_batch_for_policy_update(batch)
 
                 # update critic
                 if self.use_critic:

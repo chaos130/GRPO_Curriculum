@@ -8,6 +8,9 @@
 #
 # If Docker only mounts 1 GPU, script auto-falls back to 1-GPU settings.
 # Force 2-GPU: ensure container sees both cards, then e.g. N_GPUS=2 TP_SIZE=2
+#
+# Defaults match wandb run mind2web_trajectory_grpo_20260527_115746 (see configs/mind2web_trajectory_grpo.yaml).
+# Paths (data_path, model) come from env_defaults.sh; train/val shards from yaml unless overridden below.
 
 set -euo pipefail
 trap 'echo "ERROR: failed at line ${LINENO} (exit $?)" >&2' ERR
@@ -65,13 +68,15 @@ fi
 [[ "${N_GPUS}" -ge 1 ]] || { echo "ERROR: no GPU (nvidia-smi -L empty)." >&2; exit 1; }
 
 : "${TP_SIZE:=${N_GPUS}}"
-: "${MAX_BATCHED_TOKENS:=2176}"
+: "${MAX_BATCHED_TOKENS:=4352}"
 : "${LIMIT_IMAGES:=1}"
-: "${GLOBAL_BATCH_SIZE:=1}"
 : "${LR:=1.0e-6}"
 : "${OPTIM_STRATEGY:=adamw_bf16}"
 : "${ROLLOUT_N:=2}"
 : "${TOTAL_EPOCHS:=1}"
+: "${ROLLOUT_BATCH_SIZE:=1}"
+: "${VAL_BATCH_SIZE:=1}"
+: "${GLOBAL_BATCH_SIZE:=1}"
 : "${SAVE_FREQ:=50}"
 : "${VAL_FREQ:=10}"
 : "${VAL_GENERATIONS:=4}"
@@ -103,7 +108,7 @@ EXTRA_ARGS=(
 )
 if [[ "${N_GPUS}" -ge 2 && "${_HOST_MEM_GB}" -ge 96 ]]; then
   # 2×4090 24GB: LoRA + vLLM TP=2; keep headroom for update_actor after vLLM sleep
-  : "${ENABLE_KL:=${ENABLE_KL:-0}}"
+  : "${ENABLE_KL:=${ENABLE_KL:-1}}"
   : "${GPU_MEM_UTIL:=${GPU_MEM_UTIL:-0.28}}"
   EXTRA_ARGS+=(
     "worker.actor.fsdp.enable_cpu_offload=false"
@@ -113,7 +118,7 @@ if [[ "${N_GPUS}" -ge 2 && "${_HOST_MEM_GB}" -ge 96 ]]; then
   )
 else
   # 1×24GB or low host RAM: actor+vLLM share one card
-  : "${ENABLE_KL:=${ENABLE_KL:-0}}"
+  : "${ENABLE_KL:=${ENABLE_KL:-1}}"
   : "${GPU_MEM_UTIL:=${GPU_MEM_UTIL:-0.25}}"
   EXTRA_ARGS+=(
     "worker.actor.fsdp.enable_cpu_offload=true"
@@ -132,6 +137,8 @@ echo "RAM: ${_HOST_MEM_GB} GiB | GPUs (nvidia-smi): ${_NGPU} | torch: ${_TORCH_N
 echo "GPU: ${_GPU_NAME} ~${_GPU_VRAM_GB} GiB VRAM"
 echo "=== training ==="
 echo "N_GPUS=${N_GPUS} TP=${TP_SIZE} KL=${ENABLE_KL} LoRA=${LORA_RANK} vllm_mem=${GPU_MEM_UTIL} CUDA=${CUDA_VISIBLE_DEVICES}"
+echo "DATA train=${TRAIN_FILES:-<yaml>} val=${VAL_FILES:-<yaml>}"
+echo "BATCH rollout_bs=${ROLLOUT_BATCH_SIZE} val_bs=${VAL_BATCH_SIZE} global_bs=${GLOBAL_BATCH_SIZE} rollout_n=${ROLLOUT_N} epochs=${TOTAL_EPOCHS}"
 echo "MODEL=${MODEL_PATH}"
 
 [[ -n "${MAX_STEPS:-}" ]] && EXTRA_ARGS+=("trainer.max_steps=${MAX_STEPS}")
@@ -142,32 +149,37 @@ if ! python3 -c "import lxml.etree" 2>/dev/null; then
 fi
 
 echo "[mind2web_trajectory_grpo] launching trainer (logs may pause during Ray/vLLM init)..."
-exec python3 -u -m verl.trainer.main \
-    "config=${REPO_ROOT}/configs/mind2web_trajectory_grpo.yaml" \
-    "data.train_files=${TRAIN_FILES}" \
-    "data.val_files=${VAL_FILES}" \
-    "data.dataset_kwargs.data_path=${MIND2WEB_DATA}" \
-    "data.dataset_kwargs.score_file=${SCORE_FILE}" \
-    "data.dataset_kwargs.previous_action_source=${PREVIOUS_ACTION_SOURCE:-gold}" \
-    "worker.actor.model.model_path=${MODEL_PATH}" \
-    "worker.actor.global_batch_size=${GLOBAL_BATCH_SIZE}" \
-    "worker.actor.optim.lr=${LR}" \
-    "worker.actor.optim.strategy=${OPTIM_STRATEGY}" \
-    "worker.rollout.n=${ROLLOUT_N}" \
-    "worker.rollout.tensor_parallel_size=${TP_SIZE}" \
-    "worker.rollout.gpu_memory_utilization=${GPU_MEM_UTIL}" \
-    "worker.rollout.limit_images=${LIMIT_IMAGES}" \
-    "worker.rollout.max_num_batched_tokens=${MAX_BATCHED_TOKENS}" \
-    "worker.reward.reward_function=${REPO_ROOT}/rewards/mind2web_trajectory.py:compute_score" \
-    "algorithm.disable_kl=$([[ "${ENABLE_KL}" == 1 ]] && echo false || echo true)" \
-    "algorithm.use_kl_loss=$([[ "${ENABLE_KL}" == 1 ]] && echo true || echo false)" \
-    "trainer.experiment_name=${EXPERIMENT_NAME}" \
-    "trainer.logger=${LOGGER}" \
-    "trainer.n_gpus_per_node=${N_GPUS}" \
-    "trainer.total_epochs=${TOTAL_EPOCHS}" \
-    "trainer.save_freq=${SAVE_FREQ}" \
-    "trainer.val_freq=${VAL_FREQ}" \
-    "trainer.val_generations_to_log=${VAL_GENERATIONS}" \
-    "trainer.val_after_train=${VAL_AFTER_TRAIN}" \
-    "trainer.rollout_trajectory_json_steps=${ROLLOUT_JSON_STEPS}" \
-    "${EXTRA_ARGS[@]}"
+CLI_ARGS=(
+    "config=${REPO_ROOT}/configs/mind2web_trajectory_grpo.yaml"
+    "data.dataset_kwargs.data_path=${MIND2WEB_DATA}"
+    "data.dataset_kwargs.score_file=${SCORE_FILE}"
+    "data.dataset_kwargs.previous_action_source=${PREVIOUS_ACTION_SOURCE:-gold}"
+    "worker.actor.model.model_path=${MODEL_PATH}"
+    "worker.actor.global_batch_size=${GLOBAL_BATCH_SIZE}"
+    "worker.actor.optim.lr=${LR}"
+    "worker.actor.optim.strategy=${OPTIM_STRATEGY}"
+    "worker.rollout.n=${ROLLOUT_N}"
+    "worker.rollout.tensor_parallel_size=${TP_SIZE}"
+    "worker.rollout.gpu_memory_utilization=${GPU_MEM_UTIL}"
+    "worker.rollout.limit_images=${LIMIT_IMAGES}"
+    "worker.rollout.max_num_batched_tokens=${MAX_BATCHED_TOKENS}"
+    "worker.reward.reward_function=${REPO_ROOT}/rewards/mind2web_trajectory.py:compute_score"
+    "algorithm.disable_kl=$([[ "${ENABLE_KL}" == 1 ]] && echo false || echo true)"
+    "algorithm.use_kl_loss=$([[ "${ENABLE_KL}" == 1 ]] && echo true || echo false)"
+    "trainer.experiment_name=${EXPERIMENT_NAME}"
+    "trainer.logger=${LOGGER}"
+    "trainer.n_gpus_per_node=${N_GPUS}"
+    "trainer.total_epochs=${TOTAL_EPOCHS}"
+    "trainer.save_freq=${SAVE_FREQ}"
+    "trainer.val_freq=${VAL_FREQ}"
+    "trainer.val_generations_to_log=${VAL_GENERATIONS}"
+    "trainer.val_after_train=${VAL_AFTER_TRAIN}"
+    "trainer.rollout_trajectory_json_steps=${ROLLOUT_JSON_STEPS}"
+)
+# Optional overrides (default: use yaml train_files / val_files)
+[[ -n "${TRAIN_FILES:-}" ]] && CLI_ARGS+=("data.train_files=${TRAIN_FILES}")
+[[ -n "${VAL_FILES:-}" ]] && CLI_ARGS+=("data.val_files=${VAL_FILES}")
+[[ -n "${ROLLOUT_BATCH_SIZE:-}" ]] && CLI_ARGS+=("data.rollout_batch_size=${ROLLOUT_BATCH_SIZE}")
+[[ -n "${VAL_BATCH_SIZE:-}" ]] && CLI_ARGS+=("data.val_batch_size=${VAL_BATCH_SIZE}")
+
+exec python3 -u -m verl.trainer.main "${CLI_ARGS[@]}" "${EXTRA_ARGS[@]}"

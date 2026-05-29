@@ -40,6 +40,8 @@ __all__ = [
 @dataclass
 class WorkerConfig:
     hybrid_engine: bool = True
+    trajectory_rollout: bool = False
+    """True when rollout_type is mind2web_trajectory (rows already include rollout.n)."""
     actor: ActorConfig = field(default_factory=ActorConfig)
     critic: CriticConfig = field(default_factory=CriticConfig)
     ref: RefConfig = field(default_factory=RefConfig)

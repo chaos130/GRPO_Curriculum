@@ -3,7 +3,8 @@
 The original Mind2Web action-prediction trainer flattens each task into
 independent step-level SFT examples.  GRPO_Curriculum keeps the task intact:
 one dataset item is one fixed offline trajectory with states S_1...S_t.  The
-rollout adapter later samples multiple action trajectories over those states.
+rollout adapter tokenizes ``trajectory_data.steps[*].state_prompt`` per step;
+this dataset does not pre-tokenize seed prompts (that path was unused).
 """
 
 from __future__ import annotations
@@ -12,22 +13,18 @@ import json
 import pickle
 from typing import Any, Optional
 
-import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer
 
-from data.qwen_vl_compat import expand_text_position_ids_for_qwen_vl
-from prompts.mind2web import POLICY_SYSTEM, build_step_state
-from verl.utils import torch_functional as VF
+from prompts.mind2web import build_step_state
 
 
 class Mind2WebTrajectoryDataset(Dataset):
     """Load Mind2Web as task-level offline trajectories.
 
-    Each returned item still satisfies EasyR1's batch contract by providing a
-    small seed prompt (`input_ids`, `raw_prompt_ids`, etc.).  The true rollout
-    states are stored in `trajectory_data.steps[*].state_prompt`.
+    Each item returns ``trajectory_data`` (fixed states + gold labels) and
+    ``ground_truth``.  Per-step tokenization happens in ``mind2web_trajectory_rollout``.
     """
 
     @staticmethod
@@ -71,6 +68,7 @@ class Mind2WebTrajectoryDataset(Dataset):
         if previous_action_source not in {"gold", "policy"}:
             raise ValueError(f"Unsupported previous_action_source: {previous_action_source}")
 
+        # Tokenizer kept for API parity with ``create_dataset``; rollout re-tokenizes per step.
         self.tokenizer = tokenizer
         self.max_prompt_length = max_prompt_length
         self.truncation = truncation
@@ -124,75 +122,10 @@ class Mind2WebTrajectoryDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         task = self.dataset[self.task_indices[index]]
         trajectory_data = self._build_trajectory_data(task)
-        seed_prompt = self._build_seed_prompt(trajectory_data)
-
-        prompt_text = self.tokenizer.apply_chat_template(
-            [
-                {"role": "system", "content": POLICY_SYSTEM},
-                {"role": "user", "content": seed_prompt},
-            ],
-            add_generation_prompt=True,
-            tokenize=False,
-        )
-        model_inputs = self.tokenizer([prompt_text], add_special_tokens=False, return_tensors="pt")
-        input_ids = model_inputs["input_ids"][0]
-        attention_mask = model_inputs["attention_mask"][0]
-        position_ids = torch.clip(attention_mask.cumsum(dim=0) - 1, min=0)
-
-        # Reuse `input_ids` instead of re-encoding `prompt_text` for raw_prompt_ids.
-        raw_prompt_ids = input_ids.tolist()
-
-        # Qwen-VL forward requires (4, seq_len) mrope position_ids; for text-only
-        # Mind2Web prompts we replicate the text rope across all 4 channels.
-        position_ids = expand_text_position_ids_for_qwen_vl(position_ids, self.tokenizer)
-
-        input_ids, attention_mask, position_ids = VF.postprocess_data(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            max_length=self.max_prompt_length,
-            pad_token_id=self.tokenizer.pad_token_id,
-            left_pad=True,
-            truncation=self.truncation,
-        )
-        if len(raw_prompt_ids) > self.max_prompt_length:
-            raw_prompt_ids = self._truncate_ids(raw_prompt_ids)
-
         return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "position_ids": position_ids,
-            "raw_prompt_ids": raw_prompt_ids,
-            # ground_truth remains a string because the existing reward manager
-            # passes it through directly to custom reward functions.
             "ground_truth": json.dumps(trajectory_data["gold_trajectory"], ensure_ascii=False),
             "trajectory_data": trajectory_data,
         }
-
-    def _truncate_ids(self, token_ids: list[int]) -> list[int]:
-        """Match EasyR1's truncation behavior for raw_prompt_ids."""
-
-        if self.truncation == "left":
-            return token_ids[-self.max_prompt_length :]
-        if self.truncation == "right":
-            return token_ids[: self.max_prompt_length]
-        raise RuntimeError(f"Prompt length {len(token_ids)} is longer than {self.max_prompt_length}.")
-
-    def _build_seed_prompt(self, trajectory_data: dict[str, Any]) -> str:
-        """Build a compact task-level seed prompt for EasyR1 bookkeeping.
-
-        The seed prompt is not the per-step policy state.  It gives the trainer
-        a conventional prompt tensor while the rollout adapter consumes
-        `trajectory_data.steps[*].state_prompt` for actual generation.
-        """
-
-        return (
-            "You are solving a Mind2Web task with fixed offline webpage states.\n"
-            f"Task: {trajectory_data['confirmed_task']}\n"
-            f"Website: {trajectory_data['website']}\n"
-            f"Number of states: {len(trajectory_data['steps'])}\n"
-            "The rollout adapter will ask for the next action at each state."
-        )
 
     def _build_trajectory_data(self, task: dict[str, Any]) -> dict[str, Any]:
         """Convert one raw Mind2Web task into fixed rollout states."""

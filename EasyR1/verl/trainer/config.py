@@ -170,6 +170,7 @@ class PPOConfig:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
 
     def post_init(self):
+        self.worker.trajectory_rollout = self.data.rollout_type == "mind2web_trajectory"
         self.worker.rollout.prompt_length = self.data.max_prompt_length
         self.worker.rollout.response_length = self.data.max_response_length
         self.worker.rollout.trust_remote_code = self.worker.actor.model.trust_remote_code

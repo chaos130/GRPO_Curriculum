@@ -90,9 +90,7 @@ def main() -> None:
     print(f"\n  state_prompt chars: {len(state_prompt)}")
     print(f"  seq_target:\n{step0['seq_target'][:400]}")
 
-    print("\n=== Tensor shapes ===")
-    print(f"  input_ids: {tuple(sample['input_ids'].shape)}")
-    print(f"  ground_truth (truncated): {sample['ground_truth'][:200]}...")
+    print(f"\n  ground_truth (truncated): {sample['ground_truth'][:200]}...")
 
     preview = {
         "website": traj["website"],

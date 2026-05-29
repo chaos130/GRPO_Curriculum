@@ -1,10 +1,11 @@
+# Baseline aligned with wandb run mind2web_trajectory_grpo_20260527_115746
 data:
   dataset_type: mind2web_trajectory
   rollout_type: mind2web_trajectory
   train_files: train/train_0.json
   val_files: test_task/test_task_0.json
-  max_prompt_length: 2048
-  max_response_length: 128
+  max_prompt_length: 4096
+  max_response_length: 256
   rollout_batch_size: 1
   mini_rollout_batch_size: null
   val_batch_size: 1
@@ -24,9 +25,9 @@ data:
 
 algorithm:
   adv_estimator: grpo
-  # KL ref adds GPU peak; enable via ENABLE_KL=1 after stable runs
-  disable_kl: true
-  use_kl_loss: false
+  # Ref-policy KL in actor loss (not reward penalty) — keeps policy near SFT init, reduces reward hacking.
+  disable_kl: false
+  use_kl_loss: true
   kl_penalty: low_var_kl
   kl_coef: 1.0e-2
   online_filtering: false
@@ -63,7 +64,7 @@ worker:
     top_p: 0.95
     limit_images: 1
     gpu_memory_utilization: 0.28
-    max_num_batched_tokens: 2176
+    max_num_batched_tokens: 4352
     tensor_parallel_size: 2
     enforce_eager: false
     val_override_config:
@@ -98,6 +99,8 @@ trainer:
   save_freq: 50
   save_limit: 3
   save_model_only: false
+  log_rollout_trajectory_json: false
+  rollout_trajectory_json_steps: [1, 10, 50, 100]
   save_checkpoint_path: null
   load_checkpoint_path: null
   find_last_checkpoint: true

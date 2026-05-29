@@ -70,8 +70,8 @@ python3 -m verl.trainer.main \
     data.rollout_type=mind2web_trajectory \
     data.train_files="${VAL_FILE}" \
     data.val_files="${VAL_FILE}" \
-    data.max_prompt_length=2048 \
-    data.max_response_length=128 \
+    data.max_prompt_length=4096 \
+    data.max_response_length=256 \
     data.rollout_batch_size=1 \
     data.val_batch_size=1 \
     data.shuffle=false \

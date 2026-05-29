@@ -139,13 +139,20 @@ class FSDPWorker(Worker):
         self.ulysses_sharding_manager = FSDPUlyssesShardingManager(self.ulysses_device_mesh)
 
         # validate and normalize config
+        # Scale global_batch_size by rollout.n so per-GPU mini-batch is >= 1 on multi-GPU runs
+        # (115746 baseline: yaml global_batch_size=1, rollout.n=2, 2 GPUs -> effective 2, per_device=1).
+        # Mind2Web trajectory rows are step-expanded separately; padding in ray_trainer handles uneven lengths.
         if self.config.rollout.n > 1:
             config.global_batch_size *= self.config.rollout.n
             self.print_rank0(f"{role} will use global batch size {config.global_batch_size}.")
 
-        config.global_batch_size_per_device = config.global_batch_size // (world_size // config.ulysses_size)
-        if config.global_batch_size_per_device == 0:
-            raise ValueError(f"{role} global batch size * ulysses size must be larger than num gpus.")
+        dp_world = world_size // config.ulysses_size
+        config.global_batch_size_per_device = max(1, config.global_batch_size // dp_world)
+        if config.global_batch_size < dp_world:
+            self.print_rank0(
+                f"{role}: global_batch_size={config.global_batch_size} < num_gpus={dp_world}; "
+                f"using global_batch_size_per_device={config.global_batch_size_per_device}."
+            )
 
         if config.global_batch_size_per_device % config.micro_batch_size_per_device_for_update != 0:
             raise ValueError(f"{role} global batch size per device must be divisible by the micro batch size.")
