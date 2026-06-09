@@ -1,29 +1,16 @@
 # GUI_GRPO
 
-本仓库以 **EasyR1** 为主：在 [EasyR1/veRL](https://github.com/hiyouga/EasyR1) 上用 **GRPO** 微调视觉语言模型，面向 **Android 截图数字游戏** 任务做了端到端重设计（prompt、稠密奖励、Judge、调试工具链）。
+本仓库基于 [EasyR1/veRL](https://github.com/hiyouga/EasyR1)，使用 GRPO 微调视觉语言模型。目前已经打通 **Android 截图 Number Game** 的端到端训练闭环，并在 `Xml` 分支加入基于 Beta 后验的目标感知 Thompson Sampling，用于研究模型能力与任务难度匹配。
 
-```
+```text
 GUI_GRPO/
-├── EasyR1/          # GRPO 训练 + Android GUI 定制
-└── Mind2Web/        # Mind2Web 数据集与基线代码（见官方文档）
+├── EasyR1/          # GRPO 训练、Android GUI 定制与课程采样
+└── Mind2Web/        # Mind2Web 数据集与基线代码
 ```
 
----
+## Android GUI GRPO
 
-## EasyR1：相对上游的改动（Android GUI Task）
-
-上游 EasyR1 主要提供通用 VLM + GRPO/DAPO 等训练能力（Geometry3K、math 等示例）。本仓库在 `EasyR1/examples/` 与 `verl/` 中针对 **Number Game（红绿灯选数）** 做了完整任务闭环，核心变化如下。
-
-### 1. 任务与 Prompt 重设计
-
-| 文件 | 作用 |
-|------|------|
-| `examples/format_prompt/android_gui.jinja` | 定义游戏规则、分步推理格式、输出结构 |
-| `examples/qwen2_5_vl_3b_android_gui_grpo.sh` | 训练入口；支持 `YELLOW_DISAMBIGUATION` 开关 |
-
-**任务**：根据截图中的红绿灯（绿/红/黄）与三个数字，输出应点击的位置 `0/1/2`。
-
-**结构化输出**（训练与奖励共用）：
+Number Game 要求模型观察截图中的交通灯颜色和三个数字，根据规则输出应点击的位置 `0/1/2`。训练提示词要求模型生成结构化推理与答案：
 
 ```xml
 <think>
@@ -35,66 +22,65 @@ Choice: position <0|1|2> because ...
 <answer>X</answer>
 ```
 
-**YELLOW 消歧**（`data.format_prompt_kwargs.yellow_disambiguation`）：
+核心文件如下：
 
-- `false`（默认）：黄灯 → 选「中间数字」
-- `true`：黄灯 → 按**数值**排序取 median，再映射到**屏幕位置**（避免模型把「中间格子」当成「中间数值」）
+| 文件 | 作用 |
+|---|---|
+| `EasyR1/examples/format_prompt/android_gui.jinja` | 游戏规则、推理格式与 Yellow 消歧 |
+| `EasyR1/examples/reward_function/android_gui.py` | Android GUI 稠密奖励函数 |
+| `EasyR1/examples/qwen2_5_vl_3b_android_gui_grpo.sh` | Qwen2.5-VL-3B GRPO 训练入口 |
+| `EasyR1/examples/qwen2_5_vl_3b_android_gui_debug_rollout.sh` | 小 batch rollout 调试入口 |
+| `EasyR1/examples/android_gui_cookbook/` | 游戏部署、数据采集与真机 Agent 工具链 |
 
-对比实验示例：
+奖励函数由四部分组成：`format=0.15`、`reason=0.25`、`budget=0.10`、`final=0.50`。其中 `reason` 使用 image-grounded group-wise LLM-as-Judge：Judge 同时观察截图与同一道题的多条 rollout，并进行多维评分和严格排序。该排序可以为 GRPO 提供组内 reward 差异，但它与任务本身的自然成功概率是两个不同信号。
 
-```bash
-YELLOW_DISAMBIGUATION=false bash examples/qwen2_5_vl_3b_android_gui_grpo.sh
-YELLOW_DISAMBIGUATION=true  EXPERIMENT_NAME=grpo_yellow_disambig bash examples/qwen2_5_vl_3b_android_gui_grpo.sh
+训练框架支持将 prompt、同组 rollout、各项 reward、advantage 与 Judge trace 导出到：
+
+```text
+checkpoints/<project>/<experiment>/rollout_trajectories/step_<N>.json
 ```
 
-### 2. 稠密奖励函数（替代单一 0/1）
+## Beta 后验与目标感知 Thompson Sampling
 
-`examples/reward_function/android_gui.py` 将 outcome reward 拆成四维加权，供 GRPO 组内比较：
+普通 Thompson Sampling 会优先选择成功率最高的题，容易持续采样简单任务。本分支实现的是 **target-aware Thompson Sampling**：为每道题维护二值成功率的 Beta 后验，并优先选择后验采样值接近目标成功率的题。
 
-| 维度 | 权重（默认） | 说明 |
-|------|-------------|------|
-| `format` | 0.15 | think/answer 结构、字段完整性（连续分） |
-| `reason` | 0.25 | **Image-grounded LLM-as-Judge**（见下） |
-| `budget` | 0.10 | 推理 token 长度落在目标区间（连续、无平台） |
-| `final` | 0.50 | `<answer>` 是否等于 `ground_truth` |
+对于任务 `i`，每次 rollout 得到成功或失败后更新：
 
-**Judge 设计要点**（与旧版「只看文本对错」不同）：
+```text
+p_i ~ Beta(alpha_i, beta_i)
+alpha_i <- alpha_i + successes_i
+beta_i  <- beta_i  + failures_i
+```
 
-- 同一 prompt 的 `rollout.n` 条响应作为 **一个 group**，**一次 API 调用**完成组内比较
-- Judge 输入：**截图 + N 条 trace**，**不提供 ground truth**
-- Judge 自行从图中恢复灯色与三数，再评 6 个 axis（`light_correct`、`numbers_correct` 等）并给出 **严格 ranking** → 派生 `rank_score`，保证组内 reward 有方差（利于 GRPO）
-- `reason = 0.6 × mean(axes) + 0.4 × rank_score`
+采样器默认偏好 `p_i ≈ 0.5`，同时混入均匀探索，避免早期估计噪声导致部分任务永久失去采样机会。Beta 后验只使用最终答案是否正确进行更新，不使用连续 `overall reward` 或 Judge 排名，因此后验仍可解释为任务成功概率。
 
-环境变量（由 `verl/trainer/main.py` 转发到 Ray reward worker）：
+实现位置：
 
-`JUDGE_ENABLED`、`JUDGE_API_KEY`、`JUDGE_BASE_URL`、`JUDGE_MODEL`、`JUDGE_MAX_WORKERS` 等。
+| 文件 | 作用 |
+|---|---|
+| `EasyR1/verl/trainer/beta_thompson_sampler.py` | Beta 后验、目标感知 Thompson Sampling 与 sampler 状态 |
+| `EasyR1/verl/trainer/beta_thompson_trainer.py` | rollout 后解析最终答案并更新后验 |
+| `EasyR1/verl/trainer/data_loader.py` | 在 Beta 模式下接入 sampler 与稳定数据索引 |
+| `EasyR1/verl/trainer/config.py` | Thompson Sampling 配置项 |
+| `EasyR1/examples/BETA_THOMPSON_SAMPLING.md` | 详细实验说明 |
 
-### 3. 训练框架层改动（`verl/`）
+在原 Android GUI 训练命令中加入以下参数即可启用：
 
-| 改动 | 位置 | 说明 |
-|------|------|------|
-| `format_prompt_kwargs` | `verl/trainer/config.py` | Jinja 模板可配置变量（如 `yellow_disambiguation`） |
-| Rollout 轨迹 JSON | `verl/utils/rollout_trajectory.py`、`ray_trainer.py` | `trainer.log_rollout_trajectory_json=true` 时，在指定 step 导出 prompt、n 条 rollout、各子 reward、`judge_log` |
-| Judge / Wandb 环境变量 | `verl/trainer/main.py` | 显式传入 Ray `runtime_env`，避免 worker 读不到 shell export |
-| 消费级多卡 NCCL | `main.py` + 训练脚本 | `NCCL_P2P_DISABLE`、`NCCL_CUMEM_*` 等，适配无 NVLink 的 RTX 4090 等 |
+```bash
+data.sampler_type=beta_thompson \
+data.beta_ts_target_success=0.5 \
+data.beta_ts_temperature=0.15 \
+data.beta_ts_prior_alpha=1.0 \
+data.beta_ts_prior_beta=1.0 \
+data.beta_ts_uniform_mix=0.1 \
+algorithm.online_filtering=false
+```
 
-调试脚本：`examples/qwen2_5_vl_3b_android_gui_debug_rollout.sh`（小 batch、只 dump step 1 轨迹）。
+训练时会额外记录 `beta_ts/batch_success_rate`、`beta_ts/selected_posterior_mean`、`beta_ts/posterior_mean`、`beta_ts/posterior_min` 和 `beta_ts/posterior_max`。第一组实验建议仅比较 `data.sampler_type=random` 与 `data.sampler_type=beta_thompson`，其余参数保持一致。
 
-轨迹文件示例路径：
+当前实现使用过滤后数据集的稳定索引维护后验，同时向 batch 暴露 `task_id`。恢复 checkpoint 时必须保证数据集内容、过滤条件和排序不发生变化。Beta 模式使用单进程 DataLoader，确保本轮后验更新可以影响下一批采样。
 
-`checkpoints/<project>/<exp>/rollout_trajectories/step_0001.json`
-
-### 4. 数据与真机工具链（`examples/android_gui_cookbook/`）
-
-| 组件 | 文件 | 说明 |
-|------|------|------|
-| 游戏部署 | `game_docker/`、`README.md` | Docker/K8s 部署 HTML Number Game |
-| 数据采集 | `collect_data.py` | 多设备 ADB 并发截图 + 元数据，用于构建 arrow 训练集 |
-| 在线试玩 | `play_agent.py`、`adb_controller.py`、`vlm_client.py` | 真机 VLM Agent，验证策略 |
-
-训练数据一般为 **截图 + `ground_truth` 位置** 的 arrow/HF 数据集（脚本内 `DATA_DIR` 可配置）。
-
-### 5. 推荐训练命令
+## 安装、训练与数据
 
 ```bash
 cd EasyR1
@@ -102,19 +88,17 @@ pip install -e .
 bash examples/qwen2_5_vl_3b_android_gui_grpo.sh
 ```
 
-更完整的部署、采集、评测说明见 `EasyR1/examples/android_gui_cookbook/README.md`。
-
----
-
-## 快速入口
+Yellow 消歧对比实验：
 
 ```bash
-cd EasyR1 && pip install -e . && bash examples/qwen2_5_vl_3b_android_gui_grpo.sh
+YELLOW_DISAMBIGUATION=false bash examples/qwen2_5_vl_3b_android_gui_grpo.sh
+YELLOW_DISAMBIGUATION=true EXPERIMENT_NAME=grpo_yellow_disambig bash examples/qwen2_5_vl_3b_android_gui_grpo.sh
 ```
 
-## 未纳入版本库的大文件
+训练数据通常为包含截图与 `ground_truth` 位置的 Arrow/Hugging Face 数据集。数据、模型权重和以下大文件不会纳入版本库，需要在本地配置：
 
-- `EasyR1/checkpoints/`、`EasyR1/wandb/`
-- `Mind2Web/data/`（约 12GB+ JSON，若使用 Mind2Web 需自行下载）
+- `EasyR1/checkpoints/` 与 `EasyR1/wandb/`
+- `Mind2Web/data/`
+- 训练脚本中的数据路径、模型路径与 API 环境变量
 
-克隆后请在本机放置数据与模型权重，并修改各脚本中的路径/API 配置。
+Mind2Web 当前仍保留为独立数据集与基线目录，尚未接入原生 EasyR1 Dataset/DataLoader。Android GUI 的 Beta Thompson Sampling 是课程采样机制的首个实验实现，后续可以将成功事件扩展为 reward variance、非零 advantage 或 effective-gradient proxy。
