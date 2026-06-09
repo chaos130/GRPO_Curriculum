@@ -15,12 +15,18 @@ from .ray_trainer import RayPPOTrainer
 
 
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.DOTALL | re.IGNORECASE)
+_ANDROID_FALLBACK_RE = re.compile(r"[012]")
 
 
 def _extract_answer(text: Any) -> str:
     value = str(text).strip()
     match = _ANSWER_RE.search(value)
-    return match.group(1).strip() if match else value
+    if match:
+        return match.group(1).strip()
+    if value in {"0", "1", "2"}:
+        return value
+    match = _ANDROID_FALLBACK_RE.search(value)
+    return match.group(0) if match else value
 
 
 class BetaThompsonRayPPOTrainer(RayPPOTrainer):
