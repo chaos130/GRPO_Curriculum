@@ -58,6 +58,18 @@ class DataConfig:
     max_pixels: Optional[int] = 4194304
     filter_overlong_prompts: bool = True
     filter_overlong_prompts_workers: int = 16
+    sampler_type: str = "random"
+    """Training sampler: `random`, `sequential`, or target-aware `beta_thompson`."""
+    task_id_key: str = "task_id"
+    """Optional stable dataset column used for logging task identity."""
+    beta_ts_target_success: float = 0.5
+    """Success probability preferred by target-aware Thompson sampling."""
+    beta_ts_temperature: float = 0.15
+    """Smaller values concentrate sampling more strongly around the target."""
+    beta_ts_prior_alpha: float = 1.0
+    beta_ts_prior_beta: float = 1.0
+    beta_ts_uniform_mix: float = 0.1
+    """Uniform exploration mixed into Thompson probabilities."""
 
     def post_init(self):
         self.image_dir = get_abs_path(self.image_dir, prompt="Image directory")
@@ -110,47 +122,34 @@ class TrainerConfig:
     logger: Tuple[str] = ("console", "wandb")
     """logger type, support `console`, `mlflow`, `swanlab`, `tensorboard`, `wandb`"""
     nnodes: int = 1
-    """number of nodes for training"""
+    """number of nodes"""
     n_gpus_per_node: int = 8
-    """number of gpus per node for training"""
+    """number of gpus per node"""
     max_try_make_batch: int = 20
     """max number of generations for online filtering, -1 means no limit"""
     critic_warmup: int = 0
     """critic warmup steps"""
     val_freq: int = -1
-    """validation frequency, -1 means no validation during training (but still runs once after training, unless val_after_train=false)"""
+    """validation frequency, -1 means no validation during training"""
     val_before_train: bool = True
-    """validate before training"""
     val_after_train: bool = True
-    """validate after training finishes; set to false for debug runs"""
     val_only: bool = False
-    """validate only, skip training"""
     val_generations_to_log: int = 0
-    """number of generations to log for validation"""
     log_rollout_trajectory_json: bool = False
-    """dump train-step rollout trajectories (prompt + n rollouts + rewards) to JSON files"""
     rollout_trajectory_json_steps: Optional[List[int]] = None
-    """global steps to dump; None means step 1 only when log_rollout_trajectory_json is enabled"""
     save_freq: int = -1
-    """save frequency, -1 means no saving"""
     save_limit: int = -1
-    """max number of checkpoints to save, -1 means no limit"""
     save_model_only: bool = False
-    """save model only, no optimizer state dict"""
     save_checkpoint_path: Optional[str] = None
-    """save checkpoint path, if not specified, use `checkpoints/project_name/experiment_name`"""
     load_checkpoint_path: Optional[str] = None
-    """load checkpoint path"""
     ray_timeline: Optional[str] = None
-    """file to save ray timeline"""
     find_last_checkpoint: bool = True
-    """automatically find the last checkpoint in the save checkpoint path to resume training"""
 
     def post_init(self):
         if self.save_checkpoint_path is None:
             self.save_checkpoint_path = os.path.join("checkpoints", self.project_name, self.experiment_name)
 
-        self.save_checkpoint_path = os.path.abspath(self.save_checkpoint_path)  # may be not exist
+        self.save_checkpoint_path = os.path.abspath(self.save_checkpoint_path)
         self.load_checkpoint_path = get_abs_path(self.load_checkpoint_path, prompt="Model checkpoint")
         if isinstance(self.rollout_trajectory_json_steps, str):
             self.rollout_trajectory_json_steps = json.loads(self.rollout_trajectory_json_steps)
