@@ -20,6 +20,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
 from ..utils.dataset import RLHFDataset, collate_fn
+from .beta_thompson_sampler import BetaThompsonSampler, IndexedDataset
 from .config import DataConfig
 
 
@@ -43,24 +44,42 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
         filter_overlong_prompts=config.filter_overlong_prompts,
         filter_overlong_prompts_workers=config.filter_overlong_prompts_workers,
     )
-    # use sampler for better ckpt resume
-    if config.shuffle:
-        train_dataloader_generator = torch.Generator()
-        train_dataloader_generator.manual_seed(config.seed)
-        sampler = RandomSampler(data_source=train_dataset, generator=train_dataloader_generator)
-    else:
-        sampler = SequentialSampler(data_source=train_dataset)
 
     if config.mini_rollout_batch_size is not None:
         train_batch_size = config.mini_rollout_batch_size
     else:
         train_batch_size = config.rollout_batch_size
 
+    # A single-process loader prevents prefetched batches from hiding posterior updates.
+    if config.sampler_type == "beta_thompson":
+        train_dataset = IndexedDataset(train_dataset, task_id_key=config.task_id_key)
+        sampler = BetaThompsonSampler(
+            data_source=train_dataset,
+            batch_size=train_batch_size,
+            target_success=config.beta_ts_target_success,
+            temperature=config.beta_ts_temperature,
+            prior_alpha=config.beta_ts_prior_alpha,
+            prior_beta=config.beta_ts_prior_beta,
+            uniform_mix=config.beta_ts_uniform_mix,
+            seed=config.seed,
+        )
+        train_num_workers = 0
+    elif config.sampler_type == "random":
+        train_dataloader_generator = torch.Generator()
+        train_dataloader_generator.manual_seed(config.seed)
+        sampler = RandomSampler(data_source=train_dataset, generator=train_dataloader_generator)
+        train_num_workers = 8
+    elif config.sampler_type == "sequential":
+        sampler = SequentialSampler(data_source=train_dataset)
+        train_num_workers = 8
+    else:
+        raise ValueError(f"Unknown sampler_type: {config.sampler_type}.")
+
     train_dataloader = StatefulDataLoader(
         dataset=train_dataset,
         batch_size=train_batch_size,
         sampler=sampler,
-        num_workers=8,
+        num_workers=train_num_workers,
         collate_fn=collate_fn,
         pin_memory=False,
         drop_last=True,
