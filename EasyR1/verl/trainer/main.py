@@ -22,6 +22,7 @@ from ..single_controller.ray import RayWorkerGroup
 from ..utils.tokenizer import get_processor, get_tokenizer
 from ..workers.fsdp_workers import FSDPWorker
 from ..workers.reward import AutoRewardManager
+from .beta_thompson_trainer import BetaThompsonRayPPOTrainer
 from .config import PPOConfig
 from .data_loader import create_dataloader
 from .ray_trainer import RayPPOTrainer, ResourcePoolManager, Role
@@ -33,10 +34,8 @@ class Runner:
     """A runner for RL training."""
 
     def run(self, config: PPOConfig):
-        # print config
         print(json.dumps(config.to_dict(), indent=2))
 
-        # instantiate tokenizer
         tokenizer = get_tokenizer(
             config.worker.actor.model.model_path,
             override_chat_template=config.data.override_chat_template,
@@ -50,7 +49,6 @@ class Runner:
             use_fast=True,
         )
 
-        # define worker classes
         ray_worker_group_cls = RayWorkerGroup
         role_worker_mapping = {
             Role.ActorRolloutRef: ray.remote(FSDPWorker),
@@ -71,8 +69,9 @@ class Runner:
         val_reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
 
         train_dataloader, val_dataloader = create_dataloader(config.data, tokenizer, processor)
+        trainer_cls = BetaThompsonRayPPOTrainer if config.data.sampler_type == "beta_thompson" else RayPPOTrainer
 
-        trainer = RayPPOTrainer(
+        trainer = trainer_cls(
             config=config,
             tokenizer=tokenizer,
             processor=processor,
@@ -102,32 +101,21 @@ def main():
     ppo_config.deep_post_init()
 
     if not ray.is_initialized():
-        # Ray 子进程的环境变量（shell 里 export 的变量不会自动传给 Ray worker，必须在这里显式声明）
         env_vars = {
             "TOKENIZERS_PARALLELISM": "true",
             "NCCL_DEBUG": "WARN",
             "VLLM_LOGGING_LEVEL": "WARN",
             "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",
-            # 显存碎片优化：必须为 False，因为 vLLM 的 CuMemAllocator 不兼容 expandable_segments
-            # 参考：https://github.com/pytorch/pytorch/issues/147851
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
-            # 禁用 GPU P2P 直连：消费级显卡（RTX 4090/3090）无 NVLink，
-            # 不禁用会报错：Cuda failure 217 'peer access is not supported between these two devices'
             "NCCL_P2P_DISABLE": "1",
-            # 禁用 InfiniBand 探测：单机多卡训练用不到 IB，避免误检测警告
             "NCCL_IB_DISABLE": "1",
-            # 显式启用共享内存通信（默认值，写出来更稳定）
             "NCCL_SHM_DISABLE": "0",
-            # 禁用 CUDA Multicast Memory：NCCL 2.19+ 版本即使 P2P_DISABLE=1，
-            # CUMEM 仍会尝试 cudaDeviceEnablePeerAccess，在消费级 4090 上报 217 错误
             "NCCL_CUMEM_ENABLE": "0",
-            # NCCL 2.24+ 默认开启 host cuMem，无 NVLink/Docker 多卡时在 barrier 处 SIGSEGV
             "NCCL_CUMEM_HOST_ENABLE": "0",
             "NCCL_NVLS_ENABLE": "0",
         }
-        # 转发 LLM-as-Judge / wandb 相关 env 到 Ray worker（reward function 跑在 Ray actor 里）
         for key in (
             "JUDGE_ENABLED",
             "JUDGE_API_KEY",
@@ -150,7 +138,6 @@ def main():
     ray.get(runner.run.remote(ppo_config))
 
     if ppo_config.trainer.ray_timeline is not None:
-        # use `export RAY_PROFILING=1` to record the ray timeline
         ray.timeline(filename=ppo_config.trainer.ray_timeline)
 
 
