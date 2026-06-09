@@ -64,12 +64,12 @@ def create_dataloader(config: DataConfig, tokenizer: PreTrainedTokenizer, proces
             seed=config.seed,
         )
         train_num_workers = 0
-    elif config.sampler_type == "random":
+    elif config.sampler_type == "random" and config.shuffle:
         train_dataloader_generator = torch.Generator()
         train_dataloader_generator.manual_seed(config.seed)
         sampler = RandomSampler(data_source=train_dataset, generator=train_dataloader_generator)
         train_num_workers = 8
-    elif config.sampler_type == "sequential":
+    elif config.sampler_type == "sequential" or (config.sampler_type == "random" and not config.shuffle):
         sampler = SequentialSampler(data_source=train_dataset)
         train_num_workers = 8
     else:
