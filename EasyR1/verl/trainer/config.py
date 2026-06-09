@@ -122,7 +122,7 @@ class TrainerConfig:
     logger: Tuple[str] = ("console", "wandb")
     """logger type, support `console`, `mlflow`, `swanlab`, `tensorboard`, `wandb`"""
     nnodes: int = 1
-    """number of nodes"
+    """number of nodes"""
     n_gpus_per_node: int = 8
     """number of gpus per node"""
     max_try_make_batch: int = 20
